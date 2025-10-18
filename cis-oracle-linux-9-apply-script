@@ -802,6 +802,87 @@ run_command "dnf autoremove -y" "1.9.3 Remove orphaned dependencies"
 # Optional: verify graphical targets are disabled
 run_command "systemctl list-unit-files | grep graphical.target" "1.9.4 Verify graphical target status"
 
+# =====================[ SECTION 2.1: Disable Unused Services ]=====================
+start_section "2.1"
+
+# List of services to disable/remove
+SERVICES=(
+  autofs avahi dhcpd named dnsmasq smb vsftpd dovecot nfs-server ypserv cups rpcbind rsyncd snmpd telnet.socket
+  tftp.socket squid httpd xinetd xorg postfix
+)
+
+for svc in "${SERVICES[@]}"; do
+  if systemctl is-enabled "$svc" &>/dev/null || systemctl is-active "$svc" &>/dev/null; then
+    run_command "systemctl stop $svc" "2.1 Stop service: $svc"
+    run_command "systemctl disable $svc" "2.1 Disable service: $svc"
+    run_command "systemctl mask $svc" "2.1 Mask service: $svc"
+  fi
+done
+
+# List of packages to remove (if not required)
+PACKAGES=(
+  autofs avahi dhcp-server bind dnsmasq samba vsftpd dovecot nfs-utils ypserv cups rpcbind rsync snmp telnet-server
+  tftp-server squid httpd xorg-x11-server-Xorg postfix
+)
+
+for pkg in "${PACKAGES[@]}"; do
+  if rpm -q "$pkg" &>/dev/null; then
+    run_command "dnf remove -y $pkg" "2.1 Remove package: $pkg"
+  fi
+done
+
+# =====================[ SECTION 2.1.21: Configure Postfix for Local-Only ]=====================
+start_section "2.1.21"
+
+POSTFIX_CONF="/etc/postfix/main.cf"
+
+# Set inet_interfaces to loopback-only
+if grep -q '^inet_interfaces' "$POSTFIX_CONF"; then
+  run_command "sed -ri 's/^inet_interfaces\s*=.*/inet_interfaces = loopback-only/' ${POSTFIX_CONF}" "2.1.21 Update inet_interfaces to loopback-only"
+else
+  run_command "echo 'inet_interfaces = loopback-only' >> ${POSTFIX_CONF}" "2.1.21 Add inet_interfaces to main.cf"
+fi
+
+# Restart postfix to apply changes
+run_command "systemctl restart postfix" "2.1.21 Restart postfix"
+
+#### =====================[ SECTION 2.1.22: Restrict Network Listening Services ]=====================
+###start_section "2.1.22"
+###
+#### Replace with actual service and package names
+###SERVICE_NAME="example"
+###PACKAGE_NAME="example-package"
+###
+#### Stop and remove service if not required
+###run_command "systemctl stop ${SERVICE_NAME}.socket ${SERVICE_NAME}.service" "2.1.22 Stop ${SERVICE_NAME}"
+###run_command "dnf remove -y ${PACKAGE_NAME}" "2.1.22 Remove ${PACKAGE_NAME}"
+###
+#### If package is required, mask the service instead
+###run_command "systemctl mask ${SERVICE_NAME}.socket ${SERVICE_NAME}.service" "2.1.22 Mask ${SERVICE_NAME} if required"
+
+# =====================[ SECTION 2.2: Remove Unused Client Tools ]=====================
+start_section "2.2"
+
+# List of client packages to remove
+CLIENT_PACKAGES=(
+  ftp
+  openldap-clients
+  ypbind
+  telnet
+  tftp
+)
+
+for pkg in "${CLIENT_PACKAGES[@]}"; do
+  if rpm -q "$pkg" &>/dev/null; then
+    run_command "dnf remove -y $pkg" "2.2 Remove client package: $pkg"
+  else
+    run_command "echo '$pkg is not installed'" "2.2 Confirm absence of: $pkg"
+  fi
+done
+
+
+
+
 
 # =====================[ END OF CIS ORACLE LINUX 9 HARDENING SCRIPT ]=====================
 
