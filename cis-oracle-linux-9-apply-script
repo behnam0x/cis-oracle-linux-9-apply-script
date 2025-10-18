@@ -119,14 +119,14 @@ run_command "dnf config-manager --enable ol9_baseos_latest ol9_appstream" "1.2.1
 start_section "1.2.2"
 
 # Update system packages
-run_command "dnf update -y" "1.2.2 Update system packages"
+##run_command "dnf update -y" "1.2.2 Update system packages"
 
 
 # =====================[ SECTION 1.3.1.1: Ensure SELinux is installed ]=====================
 start_section "1.3.1.1"
 
 # Install SELinux core packages
-run_command "dnf install -y libselinux policycoreutils selinux-policy selinux-policy-targeted" "1.3.1.1 Install SELinux packages"
+##run_command "dnf install -y libselinux policycoreutils selinux-policy selinux-policy-targeted" "1.3.1.1 Install SELinux packages"
 
 # =====================[ SECTION 1.3.1.2: Ensure SELinux is not disabled in bootloader config ]=====================
 start_section "1.3.1.2"
@@ -176,7 +176,7 @@ run_command "dnf remove -y setroubleshoot" "1.3.1.8 Remove SETroubleshoot packag
 # =====================[ SECTION 1.4.1: Ensure bootloader password is set ]=====================
 start_section "1.4.1"
 
-run_command "grub2-setpassword" "1.4.1 Set GRUB bootloader password"
+##run_command "grub2-setpassword" "1.4.1 Set GRUB bootloader password"
 
 # =====================[ SECTION 1.4.2: Ensure access to bootloader config is configured ]=====================
 start_section "1.4.2"
@@ -214,38 +214,61 @@ run_command "printf '\nkernel.yama.ptrace_scope = 1\n' >> /etc/sysctl.d/60-kerne
 # Apply the setting immediately
 run_command "sysctl -w kernel.yama.ptrace_scope=1" "1.5.2 Apply ptrace_scope setting at runtime"
 
-# =====================[ SECTION 1.5.3: Ensure core dump backtraces are disabled ]=====================
-start_section "1.5.3"
+##REM### =====================[ SECTION 1.5.3: Ensure core dump backtraces are disabled ]=====================
+##REM##start_section "1.5.3"
+##REM##
+##REM### Create config directory if missing
+##REM##run_command "[ ! -d /etc/systemd/coredump.conf.d/ ] && mkdir -p /etc/systemd/coredump.conf.d/" "1.5.3 Ensure coredump config directory exists"
+##REM##
+##REM### Add or update ProcessSizeMax=0 in the config file
+##REM##if grep -Psq -- '^\h*
+##REM##
+##REM##\[Coredump\]
+##REM##
+##REM##' /etc/systemd/coredump.conf.d/60-coredump.conf; then
+##REM##  run_command "printf '%s\n' 'ProcessSizeMax=0' >> /etc/systemd/coredump.conf.d/60-coredump.conf" "1.5.3 Append ProcessSizeMax=0 to existing [Coredump] section"
+##REM##else
+##REM##  run_command "printf '%s\n' '[Coredump]' 'ProcessSizeMax=0' > /etc/systemd/coredump.conf.d/60-coredump.conf" "1.5.3 Create [Coredump] section with ProcessSizeMax=0"
+##REM##fi
+##REM##
+##REM### =====================[ SECTION 1.5.4: Ensure core dump storage is disabled ]=====================
+##REM##start_section "1.5.4"
+##REM##
+##REM### Create config directory if missing
+##REM##run_command "[ ! -d /etc/systemd/coredump.conf.d/ ] && mkdir -p /etc/systemd/coredump.conf.d/" "1.5.4 Ensure coredump config directory exists"
+##REM##
+##REM### Add or update Storage=none in the config file
+##REM##if grep -Psq -- '^\h*
+##REM##
+##REM##\[Coredump\]
+##REM##
+##REM##' /etc/systemd/coredump.conf.d/60-coredump.conf; then
+##REM##  run_command "printf '%s\n' 'Storage=none' >> /etc/systemd/coredump.conf.d/60-coredump.conf" "1.5.4 Append Storage=none to existing [Coredump] section"
+##REM##else
+##REM##  run_command "printf '%s\n' '[Coredump]' 'Storage=none' > /etc/systemd/coredump.conf.d/60-coredump.conf" "1.5.4 Create [Coredump] section with Storage=none"
+##REM##fi
 
-# Create config directory if missing
-run_command "[ ! -d /etc/systemd/coredump.conf.d/ ] && mkdir -p /etc/systemd/coredump.conf.d/" "1.5.3 Ensure coredump config directory exists"
+# =====================[ SECTION 1.5.3 & 1.5.4: Disable Core Dumps ]=====================
+start_section "1.5.3 & 1.5.4"
 
-# Add or update ProcessSizeMax=0 in the config file
-if grep -Psq -- '^\h*
+COREDUMP_DIR="/etc/systemd/coredump.conf.d"
+COREDUMP_CONF="${COREDUMP_DIR}/60-coredump.conf"
+
+# Ensure config directory exists
+run_command "mkdir -p ${COREDUMP_DIR}" "Ensure coredump config directory exists"
+
+# Create or update config file with both settings
+if grep -q '^
 
 \[Coredump\]
 
-' /etc/systemd/coredump.conf.d/60-coredump.conf; then
-  run_command "printf '%s\n' 'ProcessSizeMax=0' >> /etc/systemd/coredump.conf.d/60-coredump.conf" "1.5.3 Append ProcessSizeMax=0 to existing [Coredump] section"
+' "$COREDUMP_CONF" 2>/dev/null; then
+  # Append settings if section exists
+  run_command "grep -q '^ProcessSizeMax=' ${COREDUMP_CONF} || echo 'ProcessSizeMax=0' >> ${COREDUMP_CONF}" "Append ProcessSizeMax=0"
+  run_command "grep -q '^Storage=' ${COREDUMP_CONF} || echo 'Storage=none' >> ${COREDUMP_CONF}" "Append Storage=none"
 else
-  run_command "printf '%s\n' '[Coredump]' 'ProcessSizeMax=0' > /etc/systemd/coredump.conf.d/60-coredump.conf" "1.5.3 Create [Coredump] section with ProcessSizeMax=0"
-fi
-
-# =====================[ SECTION 1.5.4: Ensure core dump storage is disabled ]=====================
-start_section "1.5.4"
-
-# Create config directory if missing
-run_command "[ ! -d /etc/systemd/coredump.conf.d/ ] && mkdir -p /etc/systemd/coredump.conf.d/" "1.5.4 Ensure coredump config directory exists"
-
-# Add or update Storage=none in the config file
-if grep -Psq -- '^\h*
-
-\[Coredump\]
-
-' /etc/systemd/coredump.conf.d/60-coredump.conf; then
-  run_command "printf '%s\n' 'Storage=none' >> /etc/systemd/coredump.conf.d/60-coredump.conf" "1.5.4 Append Storage=none to existing [Coredump] section"
-else
-  run_command "printf '%s\n' '[Coredump]' 'Storage=none' > /etc/systemd/coredump.conf.d/60-coredump.conf" "1.5.4 Create [Coredump] section with Storage=none"
+  # Create section with both settings
+  run_command "printf '%s\n' '[Coredump]' 'ProcessSizeMax=0' 'Storage=none' > ${COREDUMP_CONF}" "Create [Coredump] section with settings"
 fi
 
 # =====================[ SECTION 1.6.1: Ensure system-wide crypto policy is not set to LEGACY ]=====================
