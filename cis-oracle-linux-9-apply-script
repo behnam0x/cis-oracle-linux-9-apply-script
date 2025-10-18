@@ -110,7 +110,7 @@ run_command "dnf repolist" "1.2.1 List enabled repositories"
 run_command "find /etc/yum.repos.d/ -name '*.repo' -exec grep -H 'enabled=1' {} \;" "1.2.1 Review enabled .repo files"
 
 # Optional: disable non-Oracle repos (example)
-# run_command "dnf config-manager --disable some-third-party-repo" "1.2.1 Disable non-official repo"
+run_command "dnf config-manager --disable some-third-party-repo" "1.2.1 Disable non-official repo"
 
 # Optional: enable Oracle Linux base repos if missing
 run_command "dnf config-manager --enable ol9_baseos_latest ol9_appstream" "1.2.1 Ensure Oracle Linux base repos are enabled"
@@ -119,14 +119,14 @@ run_command "dnf config-manager --enable ol9_baseos_latest ol9_appstream" "1.2.1
 start_section "1.2.2"
 
 # Update system packages
-#run_command "dnf update -y" "1.2.2 Update system packages"
+run_command "dnf update -y" "1.2.2 Update system packages"
 
 
 # =====================[ SECTION 1.3.1.1: Ensure SELinux is installed ]=====================
 start_section "1.3.1.1"
 
 # Install SELinux core packages
-#run_command "dnf install -y libselinux policycoreutils selinux-policy selinux-policy-targeted" "1.3.1.1 Install SELinux packages"
+run_command "dnf install -y libselinux policycoreutils selinux-policy selinux-policy-targeted" "1.3.1.1 Install SELinux packages"
 
 # =====================[ SECTION 1.3.1.2: Ensure SELinux is not disabled in bootloader config ]=====================
 start_section "1.3.1.2"
