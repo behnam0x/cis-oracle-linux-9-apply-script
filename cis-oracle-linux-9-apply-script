@@ -880,7 +880,105 @@ for pkg in "${CLIENT_PACKAGES[@]}"; do
   fi
 done
 
+# =====================[ SECTION 2.3: Time Synchronization ]=====================
+start_section "2.3"
 
+# 2.3.1 Ensure chrony is installed and enabled
+if ! rpm -q chrony &>/dev/null; then
+  run_command "dnf install -y chrony" "2.3.1 Install chrony"
+fi
+run_command "systemctl enable chronyd" "2.3.1 Enable chronyd"
+run_command "systemctl start chronyd" "2.3.1 Start chronyd"
+
+# Set system timezone to Asia/Tehran
+run_command "timedatectl set-timezone Asia/Tehran" "2.3.1 Set timezone to Asia/Tehran"
+
+# 2.3.2 Ensure chrony is configured
+CHRONY_CONF="/etc/chrony.conf"
+CHRONY_DIR="/etc/chrony.d"
+CHRONY_POOL="pool asia.pool.ntp.org iburst"
+
+if ! grep -qE '^server|^pool' "$CHRONY_CONF"; then
+  run_command "echo '${CHRONY_POOL}' >> ${CHRONY_CONF}" "2.3.2 Add NTP pool to chrony.conf"
+fi
+
+# Optional: add additional pool config file
+if [ -d "$CHRONY_DIR" ]; then
+  run_command "echo '${CHRONY_POOL}' > ${CHRONY_DIR}/ntp-pool.conf" "2.3.2 Create chrony.d pool config"
+fi
+
+# 2.3.3 Ensure chrony is not run as root
+CHRONY_SYS="/etc/sysconfig/chronyd"
+if grep -q '\-u root' "$CHRONY_SYS"; then
+  run_command "sed -ri 's/-u root//' ${CHRONY_SYS}" "2.3.3 Remove -u root from chronyd options"
+fi
+
+# Ensure OPTIONS line exists
+if ! grep -q '^OPTIONS=' "$CHRONY_SYS"; then
+  run_command "echo 'OPTIONS=\"-F 2\"' >> ${CHRONY_SYS}" "2.3.3 Add OPTIONS line to chronyd config"
+fi
+
+# Reload chronyd to apply changes
+run_command "systemctl reload-or-restart chronyd" "2.3.3 Reload chronyd"
+
+# =====================[ SECTION 2.4.1: Configure cron ]=====================
+start_section "2.4.1"
+
+# 2.4.1.1 Ensure cron daemon is enabled and active
+CRON_SERVICE=$(systemctl list-unit-files | awk '$1~/^crond?\.service/{print $1}' | head -n 1)
+if [ -n "$CRON_SERVICE" ]; then
+  run_command "systemctl unmask $CRON_SERVICE" "2.4.1.1 Unmask $CRON_SERVICE"
+  run_command "systemctl --now enable $CRON_SERVICE" "2.4.1.1 Enable and start $CRON_SERVICE"
+fi
+
+# 2.4.1.2–2.4.1.7 Ensure permissions on cron directories and files
+CRON_PATHS=(
+  /etc/crontab
+  /etc/cron.hourly/
+  /etc/cron.daily/
+  /etc/cron.weekly/
+  /etc/cron.monthly/
+  /etc/cron.d/
+)
+
+for path in "${CRON_PATHS[@]}"; do
+  run_command "chown root:root $path" "2.4.1 Set owner of $path"
+  run_command "chmod og-rwx $path" "2.4.1 Set permissions of $path"
+done
+
+# 2.4.1.8 Restrict crontab to authorized users
+CRON_ALLOW="/etc/cron.allow"
+CRON_DENY="/etc/cron.deny"
+
+if [ ! -e "$CRON_ALLOW" ]; then
+  run_command "touch $CRON_ALLOW" "2.4.1.8 Create cron.allow"
+fi
+run_command "chown root:root $CRON_ALLOW" "2.4.1.8 Set owner of cron.allow"
+run_command "chmod 640 $CRON_ALLOW" "2.4.1.8 Set permissions of cron.allow"
+
+if [ -e "$CRON_DENY" ]; then
+  run_command "chown root:root $CRON_DENY" "2.4.1.8 Set owner of cron.deny"
+  run_command "chmod 640 $CRON_DENY" "2.4.1.8 Set permissions of cron.deny"
+fi
+
+# =====================[ SECTION 2.4.2: Configure at ]=====================
+start_section "2.4.2"
+
+# 2.4.2.1 Restrict at to authorized users
+AT_ALLOW="/etc/at.allow"
+AT_DENY="/etc/at.deny"
+GROUP=$(grep -Pq '^daemon\b' /etc/group && echo "daemon" || echo "root")
+
+if [ ! -e "$AT_ALLOW" ]; then
+  run_command "touch $AT_ALLOW" "2.4.2.1 Create at.allow"
+fi
+run_command "chown root:$GROUP $AT_ALLOW" "2.4.2.1 Set owner of at.allow"
+run_command "chmod 640 $AT_ALLOW" "2.4.2.1 Set permissions of at.allow"
+
+if [ -e "$AT_DENY" ]; then
+  run_command "chown root:$GROUP $AT_DENY" "2.4.2.1 Set owner of at.deny"
+  run_command "chmod 640 $AT_DENY" "2.4.2.1 Set permissions of at.deny"
+fi
 
 
 
