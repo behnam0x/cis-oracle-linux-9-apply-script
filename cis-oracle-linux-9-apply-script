@@ -987,36 +987,81 @@ fi
 # =====================[ SECTION 2.4.2: Configure at ]=====================
 start_section "2.4.2"
 
-# 2.4.2.1 Restrict at to authorized users
-AT_ALLOW="/etc/at.allow"
-AT_DENY="/etc/at.deny"
-GROUP=$(grep -Pq '^daemon\b' /etc/group && echo "daemon" || echo "root")
+# Check if 'at' is installed
+if rpm -q at &>/dev/null; then
+  run_command "echo 'at is installed, proceeding with configuration'" "2.4.2.1 Confirm at presence"
 
-if [ ! -e "$AT_ALLOW" ]; then
-  run_command "touch $AT_ALLOW" "2.4.2.1 Create at.allow"
-fi
-run_command "chown root:$GROUP $AT_ALLOW" "2.4.2.1 Set owner of at.allow"
-run_command "chmod 640 $AT_ALLOW" "2.4.2.1 Set permissions of at.allow"
+  AT_ALLOW="/etc/at.allow"
+  AT_DENY="/etc/at.deny"
+  GROUP=$(grep -Pq '^daemon\b' /etc/group && echo "daemon" || echo "root")
 
-if [ -e "$AT_DENY" ]; then
-  run_command "chown root:$GROUP $AT_DENY" "2.4.2.1 Set owner of at.deny"
-  run_command "chmod 640 $AT_DENY" "2.4.2.1 Set permissions of at.deny"
+  # Create and secure /etc/at.allow
+  if [ ! -e "$AT_ALLOW" ]; then
+    run_command "touch $AT_ALLOW" "2.4.2.1 Create at.allow"
+  fi
+  run_command "chown root:$GROUP $AT_ALLOW" "2.4.2.1 Set owner of at.allow"
+  run_command "chmod 640 $AT_ALLOW" "2.4.2.1 Set permissions of at.allow"
+
+  # Secure /etc/at.deny if it exists
+  if [ -e "$AT_DENY" ]; then
+    run_command "chown root:$GROUP $AT_DENY" "2.4.2.1 Set owner of at.deny"
+    run_command "chmod 640 $AT_DENY" "2.4.2.1 Set permissions of at.deny"
+  fi
+
+  # Verification output
+  run_command "stat -Lc 'Access: (%a/%A) Owner: (%U) Group: (%G)' $AT_ALLOW" "2.4.2.1 Verify at.allow permissions"
+  run_command "[ -e \"$AT_DENY\" ] && stat -Lc 'Access: (%a/%A) Owner: (%U) Group: (%G)' $AT_DENY || echo 'at.deny does not exist'" "2.4.2.1 Verify at.deny status"
+else
+  run_command "echo 'at is not installed. Skipping 2.4.2.1 configuration.'" "2.4.2.1 Confirm absence of at"
 fi
 
 
 
 # =====================[ END OF CIS ORACLE LINUX 9 HARDENING SCRIPT ]=====================
 
+echo ""
 echo "✅ CIS Oracle Linux 9 hardening complete."
 echo "📌 Please review any warnings or manual steps noted during execution."
 echo "🔁 A reboot may be required for certain changes to take effect."
-echo "🛡️ Stay secure. Stay compliant."
+echo "🗂️ Logs saved to: $LOG_DIR"
+echo ""
 
+# 📊 Summary of results
+echo "📊 Summary of results:"
+ALL_ERRORS="$LOG_DIR/all_errors.log"
+> "$ALL_ERRORS"  # Clear or create the global error log
 
+for section in "$LOG_DIR/section_logs"/*; do
+  sec_name=$(basename "$section")
+  success_log="$section/success.log"
+  error_log="$section/error.log"
 
-# =====================[ END OF CIS ORACLE LINUX 9 HARDENING SCRIPT ]=====================
+  success_count=0
+  error_count=0
 
-echo "✅ CIS Oracle Linux 9 hardening complete."
-echo "📌 Please review any warnings or manual steps noted during execution."
-echo "🔁 A reboot may be required for certain changes to take effect."
+  # Count successes
+  [ -f "$success_log" ] && success_count=$(wc -l < "$success_log")
+
+  # Count errors and append to global error log
+  if [ -f "$error_log" ]; then
+    error_count=$(wc -l < "$error_log")
+    while IFS= read -r line; do
+      echo "[$sec_name] $line" >> "$ALL_ERRORS"
+    done < "$error_log"
+  fi
+
+  echo "  - $sec_name: ✅ $success_count success(es), ❌ $error_count error(s)"
+done
+
+# 📄 Global error log summary
+if [ -s "$ALL_ERRORS" ]; then
+  echo ""
+  echo "❗ Errors were recorded during execution."
+  echo "📄 Review them in: $ALL_ERRORS"
+else
+  echo ""
+  echo "✅ No errors recorded in global log."
+fi
+
+echo ""
 echo "🛡️ Stay secure. Stay compliant."
