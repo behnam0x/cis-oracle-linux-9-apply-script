@@ -4,10 +4,28 @@
 # Date: $(date +%Y-%m-%d)
 
 # =====================[ GLOBAL VARIABLES ]=====================
-LOG_DIR="/home/${SUDO_USER:-$(whoami)}/setup_logs"
+USE_TIMESTAMP=true  # Set to false to reuse the same log folder
+
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+BASE_LOG_DIR="/home/${SUDO_USER:-$(whoami)}/setup_logs"
+
+if [ "$USE_TIMESTAMP" = true ]; then
+  LOG_DIR="$BASE_LOG_DIR/$TIMESTAMP"
+  mkdir -p "$LOG_DIR/section_logs"
+
+  # 🧹 Keep only the 6 most recent timestamped log folders
+  cd "$BASE_LOG_DIR"
+  ls -dt */ | tail -n +7 | xargs -r rm -rf
+else
+  LOG_DIR="$BASE_LOG_DIR"
+  rm -rf "$LOG_DIR/section_logs"/*
+  > "$LOG_DIR/main.log"
+  > "$LOG_DIR/all_errors.log"
+  mkdir -p "$LOG_DIR/section_logs"
+fi
+
 CURRENT_SECTION=""
-mkdir -p "$LOG_DIR/section_logs"
+
 
 # =====================[ LOGGING FUNCTIONS ]=====================
 start_section() {
@@ -369,7 +387,7 @@ if [[ -z "$TARGET_SECTION" || "$TARGET_SECTION" == "1.6" ]]; then
  run_command "update-crypto-policies --set DEFAULT:NO-SHA1:NO-WEAKMAC:NO-SSHCBC:NO-SSHCHACHA20:NO-SSHETM" "1.6.7 Apply crypto policy with NO-SSHETM"
 fi
 
-###########################################################################################
+############################################################################################
 if [[ -z "$TARGET_SECTION" || "$TARGET_SECTION" == "1.7" ]]; then
   # =====================[ SECTION 1.7: Command Line Warning Banners ]=====================
   start_section "1.7"
@@ -407,41 +425,73 @@ EOF
   # Ensure MOTD directory exists
   run_command "mkdir -p /etc/update-motd.d" "1.7.3 Create MOTD directory"
 
-  # Disable default MOTD scripts
-  run_command "chmod -x /etc/update-motd.d/*" "1.7.3 Disable default MOTD scripts"
+  # Disable default MOTD scripts except custom
+  run_command "find /etc/update-motd.d/ -type f ! -name '00-custom' -exec chmod -x {} \;" "1.7.4 Disable default MOTD scripts"
 
   # Create custom MOTD script
   cat <<'EOF' > /etc/update-motd.d/00-custom
 #!/bin/bash
 
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
+# Color definitions
+BOLD='\033[1m'
+RESET='\033[0m'
+FG_GREEN='\033[38;5;40m'
+FG_YELLOW='\033[38;5;226m'
+FG_RED='\033[38;5;196m'
+
+# System info
 HOSTNAME=$(hostname)
+USER=$(whoami)
+LAST_LOGIN=$(last -i "$USER" | grep -m 1 "$USER" | awk '{print $1, "from", $3, "at", $5, $6, $7}')
+MEMORY=$(free -h | awk '/Mem:/ {print $3 "/" $2}')
+DISK=$(df -h / | awk 'NR==2 {print $3 "/" $2 " used"}')
+UPTIME=$(uptime -p)
+FULL_DATE=$(date "+%A, %d %B %Y — %H:%M:%S")
 
-echo -e "${GREEN}"
-echo "╔════════════════════════════════════════════════════════════════════════╗"
-echo "║                                                                        ║"
-echo "║         🖥️  Welcome to ${HOSTNAME} — Secure Access Only              ║"
-echo "║                                                                        ║"
-echo "╚════════════════════════════════════════════════════════════════════════╝"
-echo -e "${NC}"
+# Banner
+echo -e "${FG_GREEN}${BOLD}"
+echo "╔════════════════════════════════════════════════════════════════════════════════╗"
+echo "║                                                                                ║"
+echo "║        🖥️  Welcome to ${HOSTNAME} — Secure Access Only               ║"
+echo "║                                                                                ║"
+echo "╚════════════════════════════════════════════════════════════════════════════════╝"
+echo -e "${RESET}"
 
-echo -e "${YELLOW}📅 Last Login:${NC} $(lastlog -u $(whoami) | tail -n 1)"
-echo -e "${YELLOW}⏱️ Uptime:${NC} $(uptime -p)"
-echo -e "${YELLOW}📍 Hostname:${NC} ${HOSTNAME}"
-echo -e "${YELLOW}🧠 Memory Usage:${NC} $(free -h | grep Mem | awk '{print $3 "/" $2}')"
-echo -e "${YELLOW}📦 Disk Usage:${NC} $(df -h / | tail -1 | awk '{print $3 "/" $2 " used"}')"
-echo -e "${YELLOW}👤 Logged in as:${NC} $(whoami)"
+# System summary
+echo -e "${FG_YELLOW}${BOLD}📅 Last Login:${RESET}     ${LAST_LOGIN}"
+echo -e "${FG_YELLOW}${BOLD}⏱️ Uptime:${RESET}         ${UPTIME}"
+echo -e "${FG_YELLOW}${BOLD}📍 Hostname:${RESET}       ${HOSTNAME}"
+echo -e "${FG_YELLOW}${BOLD}🧠 Memory Usage:${RESET}   ${MEMORY}"
+echo -e "${FG_YELLOW}${BOLD}📦 Disk Usage:${RESET}     ${DISK}"
+echo -e "${FG_YELLOW}${BOLD}👤 Logged in as:${RESET}   ${USER}"
+echo -e "${FG_YELLOW}${BOLD}📆 Current Date:${RESET}   ${FULL_DATE}"
 echo
-echo -e "${GREEN}🔐 Reminder: Unauthorized access is prohibited. All activity is monitored.${NC}"
+
+# Mounted filesystems
+echo -e "${FG_YELLOW}${BOLD}🗂️ Mounted Filesystems:${RESET}"
+printf "%-25s %-10s %-10s %-10s %-10s\n" "Mount Point" "Size" "Used" "Avail" "Use%"
+df -h --output=target,size,used,avail,pcent | awk 'NR>1 {printf "%-25s %-10s %-10s %-10s %-10s\n", $1, $2, $3, $4, $5}'
+echo
+
+# Reminder
+echo -e "${FG_RED}${BOLD}🔐 Reminder:${RESET} Unauthorized access is prohibited. All activity is monitored."
 EOF
 
-  run_command "echo 'Custom MOTD script created at /etc/update-motd.d/00-custom'" "1.7.4 Create custom MOTD script"
   run_command "chmod +x /etc/update-motd.d/00-custom" "1.7.5 Make MOTD script executable"
-  run_command "chmod 644 /etc/issue /etc/issue.net /etc/update-motd.d/00-custom" "1.7.6 Set banner file permissions"
-  run_command "chown root:root /etc/issue /etc/issue.net /etc/update-motd.d/00-custom" "1.7.7 Set banner file ownership"
+  run_command "/etc/update-motd.d/00-custom > /etc/motd" "1.7.6 Pipe MOTD output to /etc/motd"
+  run_command "chmod 644 /etc/issue /etc/issue.net /etc/update-motd.d/00-custom /etc/motd" "1.7.7 Set banner file permissions"
+  run_command "chown root:root /etc/issue /etc/issue.net /etc/update-motd.d/00-custom /etc/motd" "1.7.8 Set banner file ownership"
+
+  # Disable systemd MOTD interference
+  run_command "systemctl disable motd-news.service" "1.7.9 Disable motd-news service"
+  run_command "systemctl mask motd-news.service" "1.7.10 Mask motd-news service"
+  run_command "rm -f /run/motd.dynamic" "1.7.11 Remove dynamic MOTD"
+
+  # Configure PAM to show /etc/motd
+  run_command "sed -i '/pam_motd.so/d' /etc/pam.d/sshd && echo 'session optional pam_motd.so motd=/etc/motd' >> /etc/pam.d/sshd" "1.7.12 Configure PAM to show MOTD"
 fi
+
+
 
 ########################################################################################
 if [[ -z "$TARGET_SECTION" || "$TARGET_SECTION" == "1.8" ]]; then
