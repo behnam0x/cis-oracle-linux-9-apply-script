@@ -1072,6 +1072,282 @@ if [[ -z "$TARGET_SECTION" || "$TARGET_SECTION" == "2.4" ]]; then
  fi
 fi
 
+########################################################################################
+if [[ -z "$TARGET_SECTION" || "$TARGET_SECTION" == "3.1" ]]; then
+ # =====================[ SECTION 3.1.1: Disable IPv6 (Manual) ]=====================
+ start_section "3.1.1"
+ 
+ # Create sysctl config to disable IPv6
+ run_command "cat <<EOF > /etc/sysctl.d/99-disable-ipv6.conf
+ net.ipv6.conf.all.disable_ipv6 = 1
+ net.ipv6.conf.default.disable_ipv6 = 1
+ EOF" "3.1.1 Create sysctl config to disable IPv6"
+ 
+ # Apply sysctl settings
+ run_command "sysctl --system" "3.1.1 Apply sysctl changes"
+ 
+ # Prevent IPv6 kernel module from loading
+ run_command "echo 'install ipv6 /bin/true' > /etc/modprobe.d/disable-ipv6.conf" "3.1.1 Block IPv6 module loading"
+ 
+ # Optional: Verify IPv6 is disabled
+ run_command "ip a | grep inet6 || echo 'IPv6 is disabled'" "3.1.1 Confirm IPv6 status"
+ 
+ # Reminder: Reboot required for full effect
+ echo "🔁 Reboot is recommended to fully disable IPv6 across all interfaces."
+ 
+ 
+ 
+ # =====================[ SECTION 3.1.2: Disable Wireless Interfaces (Automated) ]=====================
+ start_section "3.1.2"
+ 
+ # Function to disable a wireless module
+ disable_module() {
+   local module="$1"
+ 
+   # Prevent module from loading
+   run_command "echo 'install $module /bin/false' >> /etc/modprobe.d/${module}.conf" "3.1.2 Prevent loading of module: $module"
+ 
+   # Unload module if active
+   if lsmod | grep -q "$module"; then
+     run_command "modprobe -r $module" "3.1.2 Unload active module: $module"
+   fi
+ 
+   # Blacklist module
+   run_command "echo 'blacklist $module' >> /etc/modprobe.d/${module}.conf" "3.1.2 Blacklist module: $module"
+ }
+ 
+ # Detect wireless interfaces and associated drivers
+ WIRELESS_DRIVERS=$(find /sys/class/net/*/ -type d -name wireless 2>/dev/null | while read -r dir; do
+   readlink -f "$(dirname "$dir")/device/driver/module" | xargs basename
+ done | sort -u)
+ 
+ # Disable each detected wireless driver
+ for driver in $WIRELESS_DRIVERS; do
+   disable_module "$driver"
+ done
+ 
+ 
+ # =====================[ SECTION 3.1.3: Ensure Bluetooth Services Are Not in Use ]=====================
+ start_section "3.1.3"
+ 
+ # Check if bluez is installed
+ if rpm -q bluez &>/dev/null; then
+   # Check if bluez is required by other packages
+   if rpm -q --whatrequires bluez | grep -qv '^no package'; then
+     # If required, stop and mask the service
+     run_command "systemctl stop bluetooth.service" "3.1.3 Stop bluetooth.service (required dependency)"
+     run_command "systemctl mask bluetooth.service" "3.1.3 Mask bluetooth.service to prevent use"
+   else
+     # If not required, stop and remove the package
+     run_command "systemctl stop bluetooth.service" "3.1.3 Stop bluetooth.service"
+     run_command "dnf remove -y bluez" "3.1.3 Remove bluez package"
+   fi
+ else
+   run_command "echo 'bluez is not installed'" "3.1.3 Confirm absence of bluez package"
+ fi
+fi 
+
+########################################################################################
+if [[ -z "$TARGET_SECTION" || "$TARGET_SECTION" == "3.2" ]]; then
+ # =====================[ SECTION 3.2: Disable Network Kernel Modules ]=====================
+ start_section "3.2"
+ 
+ # List of network modules to disable
+ NETWORK_MODULES=(
+   dccp
+   tipc
+   rds
+   sctp
+ )
+ 
+ for module in "${NETWORK_MODULES[@]}"; do
+   # Check if module exists in kernel directories
+   if find /lib/modules/$(uname -r)/kernel -type d -name "$module" | grep -q .; then
+     # Unload if currently loaded
+     if lsmod | grep -q "^$module"; then
+       run_command "modprobe -r $module 2>/dev/null; rmmod $module 2>/dev/null" "3.2 Remove active module: $module"
+     else
+       run_command "echo '$module not currently loaded'" "3.2 Confirm $module not loaded"
+     fi
+ 
+     # Block and blacklist the module
+     run_command "echo 'install $module /bin/false' >> /etc/modprobe.d/${module}.conf" "3.2 Block loading of module: $module"
+     run_command "echo 'blacklist $module' >> /etc/modprobe.d/${module}.conf" "3.2 Blacklist module: $module"
+   else
+     run_command "echo '$module module not found in kernel directories'" "3.2 Confirm absence of module: $module"
+   fi
+ done
+fi
+
+########################################################################################
+if [[ -z "$TARGET_SECTION" || "$TARGET_SECTION" == "3.3" ]]; then
+ # =====================[ SECTION 3.3.1: Ensure IP Forwarding Is Disabled ]=====================
+ start_section "3.3.1"
+ 
+ # Disable IPv4 forwarding
+ run_command "echo 'net.ipv4.ip_forward = 0' >> /etc/sysctl.d/60-netipv4_sysctl.conf" "3.3.1 Set IPv4 forwarding to 0"
+ run_command "sysctl -w net.ipv4.ip_forward=0" "3.3.1 Apply IPv4 forwarding setting"
+ run_command "sysctl -w net.ipv4.route.flush=1" "3.3.1 Flush IPv4 routing table"
+ 
+ # Check if IPv6 is enabled
+ if [ "$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null)" != "1" ]; then
+   # Disable IPv6 forwarding
+   run_command "echo 'net.ipv6.conf.all.forwarding = 0' >> /etc/sysctl.d/60-netipv6_sysctl.conf" "3.3.1 Set IPv6 forwarding to 0"
+   run_command "sysctl -w net.ipv6.conf.all.forwarding=0" "3.3.1 Apply IPv6 forwarding setting"
+   run_command "sysctl -w net.ipv6.route.flush=1" "3.3.1 Flush IPv6 routing table"
+ else
+   run_command "echo 'IPv6 is disabled, skipping IPv6 forwarding settings'" "3.3.1 Confirm IPv6 forwarding not applicable"
+ fi
+ # =====================[ SECTION 3.3.2: Disable Packet Redirect Sending ]=====================
+ start_section "3.3.2"
+ 
+ # Set sysctl parameters to disable packet redirects
+ run_command "echo 'net.ipv4.conf.all.send_redirects = 0' >> /etc/sysctl.d/60-netipv4_sysctl.conf" "3.3.2 Set send_redirects for all interfaces"
+ run_command "echo 'net.ipv4.conf.default.send_redirects = 0' >> /etc/sysctl.d/60-netipv4_sysctl.conf" "3.3.2 Set send_redirects for default interface"
+ 
+ # Apply settings immediately
+ run_command "sysctl -w net.ipv4.conf.all.send_redirects=0" "3.3.2 Apply send_redirects=0 to all interfaces"
+ run_command "sysctl -w net.ipv4.conf.default.send_redirects=0" "3.3.2 Apply send_redirects=0 to default interface"
+ run_command "sysctl -w net.ipv4.route.flush=1" "3.3.2 Flush IPv4 routing table"
+ 
+ # =====================[ SECTION 3.3.3: Ignore Bogus ICMP Error Responses ]=====================
+ start_section "3.3.3"
+ 
+ # Set sysctl parameter to ignore bogus ICMP error responses
+ run_command "echo 'net.ipv4.icmp_ignore_bogus_error_responses = 1' >> /etc/sysctl.d/60-netipv4_sysctl.conf" "3.3.3 Set icmp_ignore_bogus_error_responses to 1"
+ 
+ # Apply setting immediately
+ run_command "sysctl -w net.ipv4.icmp_ignore_bogus_error_responses=1" "3.3.3 Apply bogus ICMP ignore setting"
+ run_command "sysctl -w net.ipv4.route.flush=1" "3.3.3 Flush IPv4 routing table"
+ 
+ # =====================[ SECTION 3.3.4: Ignore Broadcast ICMP Requests ]=====================
+ start_section "3.3.4"
+ 
+ # Set sysctl parameter to ignore broadcast ICMP echo requests
+ run_command "echo 'net.ipv4.icmp_echo_ignore_broadcasts = 1' >> /etc/sysctl.d/60-netipv4_sysctl.conf" "3.3.4 Set icmp_echo_ignore_broadcasts to 1"
+ 
+ # Apply setting immediately
+ run_command "sysctl -w net.ipv4.icmp_echo_ignore_broadcasts=1" "3.3.4 Apply broadcast ICMP ignore setting"
+ run_command "sysctl -w net.ipv4.route.flush=1" "3.3.4 Flush IPv4 routing table"
+ 
+ # =====================[ SECTION 3.3.5: Reject ICMP Redirects ]=====================
+ start_section "3.3.5"
+ 
+ # Set IPv4 sysctl parameters to reject ICMP redirects
+ run_command "echo 'net.ipv4.conf.all.accept_redirects = 0' >> /etc/sysctl.d/60-netipv4_sysctl.conf" "3.3.5 Disable IPv4 accept_redirects (all)"
+ run_command "echo 'net.ipv4.conf.default.accept_redirects = 0' >> /etc/sysctl.d/60-netipv4_sysctl.conf" "3.3.5 Disable IPv4 accept_redirects (default)"
+ 
+ # Apply IPv4 settings immediately
+ run_command "sysctl -w net.ipv4.conf.all.accept_redirects=0" "3.3.5 Apply IPv4 accept_redirects=0 (all)"
+ run_command "sysctl -w net.ipv4.conf.default.accept_redirects=0" "3.3.5 Apply IPv4 accept_redirects=0 (default)"
+ run_command "sysctl -w net.ipv4.route.flush=1" "3.3.5 Flush IPv4 routing table"
+ 
+ # Check if IPv6 is enabled
+ if [ "$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null)" != "1" ]; then
+   # Set IPv6 sysctl parameters to reject ICMP redirects
+   run_command "echo 'net.ipv6.conf.all.accept_redirects = 0' >> /etc/sysctl.d/60-netipv6_sysctl.conf" "3.3.5 Disable IPv6 accept_redirects (all)"
+   run_command "echo 'net.ipv6.conf.default.accept_redirects = 0' >> /etc/sysctl.d/60-netipv6_sysctl.conf" "3.3.5 Disable IPv6 accept_redirects (default)"
+ 
+   # Apply IPv6 settings immediately
+   run_command "sysctl -w net.ipv6.conf.all.accept_redirects=0" "3.3.5 Apply IPv6 accept_redirects=0 (all)"
+   run_command "sysctl -w net.ipv6.conf.default.accept_redirects=0" "3.3.5 Apply IPv6 accept_redirects=0 (default)"
+   run_command "sysctl -w net.ipv6.route.flush=1" "3.3.5 Flush IPv6 routing table"
+ else
+   run_command "echo 'IPv6 is disabled, skipping IPv6 redirect settings'" "3.3.5 Confirm IPv6 redirect settings not applicable"
+ fi
+ 
+ # =====================[ SECTION 3.3.6: Reject Secure ICMP Redirects ]=====================
+ start_section "3.3.6"
+ 
+ # Set sysctl parameters to reject secure ICMP redirects
+ run_command "echo 'net.ipv4.conf.all.secure_redirects = 0' >> /etc/sysctl.d/60-netipv4_sysctl.conf" "3.3.6 Disable secure_redirects for all interfaces"
+ run_command "echo 'net.ipv4.conf.default.secure_redirects = 0' >> /etc/sysctl.d/60-netipv4_sysctl.conf" "3.3.6 Disable secure_redirects for default interface"
+ 
+ # Apply settings immediately
+ run_command "sysctl -w net.ipv4.conf.all.secure_redirects=0" "3.3.6 Apply secure_redirects=0 to all interfaces"
+ run_command "sysctl -w net.ipv4.conf.default.secure_redirects=0" "3.3.6 Apply secure_redirects=0 to default interface"
+ run_command "sysctl -w net.ipv4.route.flush=1" "3.3.6 Flush IPv4 routing table"
+ 
+ # =====================[ SECTION 3.3.7: Enable Reverse Path Filtering ]=====================
+ start_section "3.3.7"
+ 
+ # Set sysctl parameters to enable reverse path filtering
+ run_command "echo 'net.ipv4.conf.all.rp_filter = 1' >> /etc/sysctl.d/60-netipv4_sysctl.conf" "3.3.7 Enable rp_filter for all interfaces"
+ run_command "echo 'net.ipv4.conf.default.rp_filter = 1' >> /etc/sysctl.d/60-netipv4_sysctl.conf" "3.3.7 Enable rp_filter for default interface"
+ 
+ # Apply settings immediately
+ run_command "sysctl -w net.ipv4.conf.all.rp_filter=1" "3.3.7 Apply rp_filter=1 to all interfaces"
+ run_command "sysctl -w net.ipv4.conf.default.rp_filter=1" "3.3.7 Apply rp_filter=1 to default interface"
+ run_command "sysctl -w net.ipv4.route.flush=1" "3.3.7 Flush IPv4 routing table"
+ 
+ # =====================[ SECTION 3.3.8: Reject Source-Routed Packets ]=====================
+ start_section "3.3.8"
+ 
+ # Set IPv4 sysctl parameters to reject source-routed packets
+ run_command "echo 'net.ipv4.conf.all.accept_source_route = 0' >> /etc/sysctl.d/60-netipv4_sysctl.conf" "3.3.8 Disable IPv4 accept_source_route (all)"
+ run_command "echo 'net.ipv4.conf.default.accept_source_route = 0' >> /etc/sysctl.d/60-netipv4_sysctl.conf" "3.3.8 Disable IPv4 accept_source_route (default)"
+ 
+ # Apply IPv4 settings immediately
+ run_command "sysctl -w net.ipv4.conf.all.accept_source_route=0" "3.3.8 Apply IPv4 accept_source_route=0 (all)"
+ run_command "sysctl -w net.ipv4.conf.default.accept_source_route=0" "3.3.8 Apply IPv4 accept_source_route=0 (default)"
+ run_command "sysctl -w net.ipv4.route.flush=1" "3.3.8 Flush IPv4 routing table"
+ 
+ # Check if IPv6 is enabled
+ if [ "$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null)" != "1" ]; then
+   # Set IPv6 sysctl parameters to reject source-routed packets
+   run_command "echo 'net.ipv6.conf.all.accept_source_route = 0' >> /etc/sysctl.d/60-netipv6_sysctl.conf" "3.3.8 Disable IPv6 accept_source_route (all)"
+   run_command "echo 'net.ipv6.conf.default.accept_source_route = 0' >> /etc/sysctl.d/60-netipv6_sysctl.conf" "3.3.8 Disable IPv6 accept_source_route (default)"
+ 
+   # Apply IPv6 settings immediately
+   run_command "sysctl -w net.ipv6.conf.all.accept_source_route=0" "3.3.8 Apply IPv6 accept_source_route=0 (all)"
+   run_command "sysctl -w net.ipv6.conf.default.accept_source_route=0" "3.3.8 Apply IPv6 accept_source_route=0 (default)"
+   run_command "sysctl -w net.ipv6.route.flush=1" "3.3.8 Flush IPv6 routing table"
+ else
+   run_command "echo 'IPv6 is disabled, skipping IPv6 source route settings'" "3.3.8 Confirm IPv6 source route settings not applicable"
+ fi
+ 
+ # =====================[ SECTION 3.3.9: Log Suspicious Packets (Martians) ]=====================
+ start_section "3.3.9"
+ 
+ # Set sysctl parameters to enable logging of martian packets
+ run_command "echo 'net.ipv4.conf.all.log_martians = 1' >> /etc/sysctl.d/60-netipv4_sysctl.conf" "3.3.9 Enable log_martians for all interfaces"
+ run_command "echo 'net.ipv4.conf.default.log_martians = 1' >> /etc/sysctl.d/60-netipv4_sysctl.conf" "3.3.9 Enable log_martians for default interface"
+ 
+ # Apply settings immediately
+ run_command "sysctl -w net.ipv4.conf.all.log_martians=1" "3.3.9 Apply log_martians=1 to all interfaces"
+ run_command "sysctl -w net.ipv4.conf.default.log_martians=1" "3.3.9 Apply log_martians=1 to default interface"
+ run_command "sysctl -w net.ipv4.route.flush=1" "3.3.9 Flush IPv4 routing table"
+ 
+ # =====================[ SECTION 3.3.10: Enable TCP SYN Cookies ]=====================
+ start_section "3.3.10"
+ 
+ # Set sysctl parameter to enable TCP SYN cookies
+ run_command "echo 'net.ipv4.tcp_syncookies = 1' >> /etc/sysctl.d/60-netipv4_sysctl.conf" "3.3.10 Enable tcp_syncookies"
+ 
+ # Apply setting immediately
+ run_command "sysctl -w net.ipv4.tcp_syncookies=1" "3.3.10 Apply tcp_syncookies=1"
+ run_command "sysctl -w net.ipv4.route.flush=1" "3.3.10 Flush IPv4 routing table"
+ 
+ # =====================[ SECTION 3.3.11: Reject IPv6 Router Advertisements ]=====================
+ start_section "3.3.11"
+ 
+ # Check if IPv6 is enabled
+ if [ "$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null)" != "1" ]; then
+   # Set sysctl parameters to reject router advertisements
+   run_command "echo 'net.ipv6.conf.all.accept_ra = 0' >> /etc/sysctl.d/60-netipv6_sysctl.conf" "3.3.11 Disable accept_ra for all interfaces"
+   run_command "echo 'net.ipv6.conf.default.accept_ra = 0' >> /etc/sysctl.d/60-netipv6_sysctl.conf" "3.3.11 Disable accept_ra for default interface"
+ 
+   # Apply settings immediately
+   run_command "sysctl -w net.ipv6.conf.all.accept_ra=0" "3.3.11 Apply accept_ra=0 to all interfaces"
+   run_command "sysctl -w net.ipv6.conf.default.accept_ra=0" "3.3.11 Apply accept_ra=0 to default interface"
+   run_command "sysctl -w net.ipv6.route.flush=1" "3.3.11 Flush IPv6 routing table"
+ else
+   run_command "echo 'IPv6 is disabled, skipping router advertisement settings'" "3.3.11 Confirm IPv6 router advertisement settings not applicable"
+ fi
+fi
+
+
+
 
 # =====================[ END OF CIS ORACLE LINUX 9 HARDENING SCRIPT ]=====================
 
