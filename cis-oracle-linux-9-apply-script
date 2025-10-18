@@ -110,7 +110,7 @@ run_command "dnf repolist" "1.2.1 List enabled repositories"
 run_command "find /etc/yum.repos.d/ -name '*.repo' -exec grep -H 'enabled=1' {} \;" "1.2.1 Review enabled .repo files"
 
 # Optional: disable non-Oracle repos (example)
-run_command "dnf config-manager --disable some-third-party-repo" "1.2.1 Disable non-official repo"
+# run_command "dnf config-manager --disable some-third-party-repo" "1.2.1 Disable non-official repo"
 
 # Optional: enable Oracle Linux base repos if missing
 run_command "dnf config-manager --enable ol9_baseos_latest ol9_appstream" "1.2.1 Ensure Oracle Linux base repos are enabled"
@@ -119,7 +119,7 @@ run_command "dnf config-manager --enable ol9_baseos_latest ol9_appstream" "1.2.1
 start_section "1.2.2"
 
 # Update system packages
-run_command "dnf update -y" "1.2.2 Update system packages"
+#run_command "dnf update -y" "1.2.2 Update system packages"
 
 
 # =====================[ SECTION 1.3.1.1: Ensure SELinux is installed ]=====================
@@ -498,6 +498,309 @@ EOF" "1.8.4.4 Write screensaver lock settings"
 
 # Apply changes
 run_command "dconf update" "1.8.4.5 Apply dconf changes"
+
+# =====================[ SECTION 1.8.5: Lock GDM Screen Settings ]=====================
+start_section "1.8.5"
+
+# Check if GDM is installed
+if rpm -q gdm &>/dev/null; then
+  run_command "echo 'GDM is installed, proceeding with lock enforcement'" "1.8.5.1 Verify GDM presence"
+
+  # Identify dconf database directories containing idle-delay and lock-delay
+  IDLE_DB=$(grep -Psril '^\h*idle-delay\h*=\h*uint32\h+\d+\b' /etc/dconf/db/*/ 2>/dev/null | awk -F'/' '{split($(NF-1),a,".");print a[1]}' | head -n 1)
+  LOCK_DB=$(grep -Psril '^\h*lock-delay\h*=\h*uint32\h+\d+\b' /etc/dconf/db/*/ 2>/dev/null | awk -F'/' '{split($(NF-1),a,".");print a[1]}' | head -n 1)
+
+  IDLE_DIR="/etc/dconf/db/${IDLE_DB}.d"
+  LOCK_DIR="/etc/dconf/db/${LOCK_DB}.d"
+
+  # Lock idle-delay setting
+  if [ -d "$IDLE_DIR" ]; then
+    LOCK_FILE="${IDLE_DIR}/locks/00-screensaver"
+    run_command "mkdir -p ${IDLE_DIR}/locks" "1.8.5.2 Ensure idle-delay lock directory exists"
+    if ! grep -q '/org/gnome/desktop/session/idle-delay' "$LOCK_FILE" 2>/dev/null; then
+      run_command "echo '/org/gnome/desktop/session/idle-delay' >> ${LOCK_FILE}" "1.8.5.3 Lock idle-delay setting"
+    fi
+  else
+    echo " - idle-delay is not set, cannot be locked. Apply 1.8.4 first."
+  fi
+
+  # Lock lock-delay setting
+  if [ -d "$LOCK_DIR" ]; then
+    LOCK_FILE2="${LOCK_DIR}/locks/00-screensaver"
+    run_command "mkdir -p ${LOCK_DIR}/locks" "1.8.5.4 Ensure lock-delay lock directory exists"
+    if ! grep -q '/org/gnome/desktop/screensaver/lock-delay' "$LOCK_FILE2" 2>/dev/null; then
+      run_command "echo '/org/gnome/desktop/screensaver/lock-delay' >> ${LOCK_FILE2}" "1.8.5.5 Lock lock-delay setting"
+    fi
+  else
+    echo " - lock-delay is not set, cannot be locked. Apply 1.8.4 first."
+  fi
+
+  # Apply changes
+  run_command "dconf update" "1.8.5.6 Apply dconf changes"
+
+else
+  echo " - GDM is not installed. Skipping 1.8.5 configuration."
+fi
+
+# =====================[ SECTION 1.8.6: Disable GDM Automount ]=====================
+start_section "1.8.6"
+
+# Check if GDM is installed
+if rpm -q gdm &>/dev/null; then
+  run_command "echo 'GDM is installed, proceeding with automount configuration'" "1.8.6.1 Verify GDM presence"
+
+  # Set dconf profile name
+  DCONF_PROFILE="local"
+  DCONF_PROFILE_FILE="/etc/dconf/profile/user"
+  DCONF_DB_DIR="/etc/dconf/db/${DCONF_PROFILE}.d"
+  DCONF_KEYFILE="${DCONF_DB_DIR}/00-media-automount"
+
+  # Ensure dconf profile includes the database
+  run_command "mkdir -p /etc/dconf/profile" "1.8.6.2 Ensure dconf profile directory exists"
+  if ! grep -q "system-db:${DCONF_PROFILE}" "${DCONF_PROFILE_FILE}" 2>/dev/null; then
+    run_command "echo -e '\nuser-db:user\nsystem-db:${DCONF_PROFILE}' >> ${DCONF_PROFILE_FILE}" "1.8.6.3 Add ${DCONF_PROFILE} to dconf profile"
+  fi
+
+  # Ensure dconf database directory exists
+  run_command "mkdir -p ${DCONF_DB_DIR}" "1.8.6.4 Create dconf database directory"
+
+  # Create or update automount settings
+  if ! grep -Pqs '^\h*automount\b' "${DCONF_KEYFILE}" 2>/dev/null || ! grep -Pqs '^\h*automount-open\b' "${DCONF_KEYFILE}" 2>/dev/null; then
+    run_command "echo '[org/gnome/desktop/media-handling]' > ${DCONF_KEYFILE}" "1.8.6.5 Create media-handling section"
+  fi
+
+  if ! grep -Pqs '^\h*automount\s*=\s*false\b' "${DCONF_KEYFILE}" 2>/dev/null; then
+    run_command "sed -ri '/^\s*
+
+\[org\/gnome\/desktop\/media-handling\]
+
+/a\\nautomount=false' ${DCONF_KEYFILE}" "1.8.6.6 Set automount=false"
+  fi
+
+  if ! grep -Pqs '^\h*automount-open\s*=\s*false\b' "${DCONF_KEYFILE}" 2>/dev/null; then
+    run_command "sed -ri '/^\s*
+
+\[org\/gnome\/desktop\/media-handling\]
+
+/a\\nautomount-open=false' ${DCONF_KEYFILE}" "1.8.6.7 Set automount-open=false"
+  fi
+
+  # Apply changes
+  run_command "dconf update" "1.8.6.8 Apply dconf changes"
+
+else
+  echo " - GDM is not installed. Skipping 1.8.6 configuration."
+fi
+
+# =====================[ SECTION 1.8.7: Lock Automount Settings ]=====================
+start_section "1.8.7"
+
+# Check if GDM is installed
+if rpm -q gdm &>/dev/null; then
+  run_command "echo 'GDM is installed, proceeding with automount lock enforcement'" "1.8.7.1 Verify GDM presence"
+
+  # Identify dconf database directories containing automount settings
+  AUTO_DB=$(grep -Psril '^\h*automount\b' /etc/dconf/db/*/ 2>/dev/null | awk -F'/' '{split($(NF-1),a,".");print a[1]}' | head -n 1)
+  OPEN_DB=$(grep -Psril '^\h*automount-open\b' /etc/dconf/db/*/ 2>/dev/null | awk -F'/' '{split($(NF-1),a,".");print a[1]}' | head -n 1)
+
+  AUTO_DIR="/etc/dconf/db/${AUTO_DB}.d"
+  OPEN_DIR="/etc/dconf/db/${OPEN_DB}.d"
+
+  # Lock automount setting
+  if [ -d "$AUTO_DIR" ]; then
+    LOCK_FILE="${AUTO_DIR}/locks/00-media-automount"
+    run_command "mkdir -p ${AUTO_DIR}/locks" "1.8.7.2 Ensure automount lock directory exists"
+    if ! grep -q '/org/gnome/desktop/media-handling/automount' "$LOCK_FILE" 2>/dev/null; then
+      run_command "echo '/org/gnome/desktop/media-handling/automount' >> ${LOCK_FILE}" "1.8.7.3 Lock automount setting"
+    fi
+  else
+    echo " - automount is not set, cannot be locked. Apply 1.8.6 first."
+  fi
+
+  # Lock automount-open setting
+  if [ -d "$OPEN_DIR" ]; then
+    LOCK_FILE2="${OPEN_DIR}/locks/00-media-automount"
+    run_command "mkdir -p ${OPEN_DIR}/locks" "1.8.7.4 Ensure automount-open lock directory exists"
+    if ! grep -q '/org/gnome/desktop/media-handling/automount-open' "$LOCK_FILE2" 2>/dev/null; then
+      run_command "echo '/org/gnome/desktop/media-handling/automount-open' >> ${LOCK_FILE2}" "1.8.7.5 Lock automount-open setting"
+    fi
+  else
+    echo " - automount-open is not set, cannot be locked. Apply 1.8.6 first."
+  fi
+
+  # Apply changes
+  run_command "dconf update" "1.8.7.6 Apply dconf changes"
+
+else
+  echo " - GDM is not installed. Skipping 1.8.7 configuration."
+fi
+
+# =====================[ SECTION 1.8.8: Disable GDM Autorun ]=====================
+start_section "1.8.8"
+
+# Check if GDM is installed
+if rpm -q gdm &>/dev/null; then
+  run_command "echo 'GDM is installed, proceeding with autorun-never configuration'" "1.8.8.1 Verify GDM presence"
+
+  # Set dconf profile name
+  DCONF_PROFILE="local"
+  DCONF_PROFILE_FILE="/etc/dconf/profile/user"
+  DCONF_DB_DIR="/etc/dconf/db/${DCONF_PROFILE}.d"
+  DCONF_KEYFILE="${DCONF_DB_DIR}/00-media-autorun"
+
+  # Ensure dconf profile includes the database
+  run_command "mkdir -p /etc/dconf/profile" "1.8.8.2 Ensure dconf profile directory exists"
+  if ! grep -q "system-db:${DCONF_PROFILE}" "${DCONF_PROFILE_FILE}" 2>/dev/null; then
+    run_command "echo -e '\nuser-db:user\nsystem-db:${DCONF_PROFILE}' >> ${DCONF_PROFILE_FILE}" "1.8.8.3 Add ${DCONF_PROFILE} to dconf profile"
+  fi
+
+  # Ensure dconf database directory exists
+  run_command "mkdir -p ${DCONF_DB_DIR}" "1.8.8.4 Create dconf database directory"
+
+  # Create or update autorun-never setting
+  if ! grep -Pqs '^\h*autorun-never\s*=\s*true\b' "${DCONF_KEYFILE}" 2>/dev/null; then
+    if ! grep -Pqs '^\h*
+
+\[org/gnome/desktop/media-handling\]
+
+' "${DCONF_KEYFILE}" 2>/dev/null; then
+      run_command "echo '[org/gnome/desktop/media-handling]' > ${DCONF_KEYFILE}" "1.8.8.5 Create media-handling section"
+    fi
+    run_command "sed -ri '/^\s*
+
+\[org\/gnome\/desktop\/media-handling\]
+
+/a\\nautorun-never=true' ${DCONF_KEYFILE}" "1.8.8.6 Set autorun-never=true"
+  else
+    run_command "echo 'autorun-never is already set to true'" "1.8.8.7 Confirm autorun-never setting"
+  fi
+
+  # Apply changes
+  run_command "dconf update" "1.8.8.8 Apply dconf changes"
+
+else
+  echo " - GDM is not installed. Skipping 1.8.8 configuration."
+fi
+
+# =====================[ SECTION 1.8.9: Lock autorun-never Setting ]=====================
+start_section "1.8.9"
+
+# Check if GDM is installed
+if rpm -q gdm &>/dev/null; then
+  run_command "echo 'GDM is installed, proceeding with autorun-never lock enforcement'" "1.8.9.1 Verify GDM presence"
+
+  # Identify dconf database directory containing autorun-never
+  AUTO_DB=$(grep -Psril '^\h*autorun-never\b' /etc/dconf/db/*/ 2>/dev/null | awk -F'/' '{split($(NF-1),a,".");print a[1]}' | head -n 1)
+  AUTO_DIR="/etc/dconf/db/${AUTO_DB}.d"
+
+  # Lock autorun-never setting
+  if [ -d "$AUTO_DIR" ]; then
+    LOCK_FILE="${AUTO_DIR}/locks/00-media-autorun"
+    run_command "mkdir -p ${AUTO_DIR}/locks" "1.8.9.2 Ensure autorun-never lock directory exists"
+    if ! grep -q '/org/gnome/desktop/media-handling/autorun-never' "$LOCK_FILE" 2>/dev/null; then
+      run_command "echo '/org/gnome/desktop/media-handling/autorun-never' >> ${LOCK_FILE}" "1.8.9.3 Lock autorun-never setting"
+    else
+      run_command "echo 'autorun-never is already locked'" "1.8.9.4 Confirm autorun-never lock"
+    fi
+  else
+    echo " - autorun-never is not set, cannot be locked. Apply 1.8.8 first."
+  fi
+
+  # Apply changes
+  run_command "dconf update" "1.8.9.5 Apply dconf changes"
+
+else
+  echo " - GDM is not installed. Skipping 1.8.9 configuration."
+fi
+
+# =====================[ SECTION 1.8.10: Disable XDMCP ]=====================
+start_section "1.8.10"
+
+GDM_CONF="/etc/gdm/custom.conf"
+
+# Remove 'Enable=true' from XDMCP section
+if grep -Pq '^\s*Enable\s*=\s*true\b' "$GDM_CONF"; then
+  run_command "sed -ri '/^\s*Enable\s*=\s*true\b/d' ${GDM_CONF}" "1.8.10.1 Remove Enable=true from custom.conf"
+else
+  run_command "echo 'XDMCP is not enabled in ${GDM_CONF}'" "1.8.10.2 Confirm XDMCP already disabled"
+fi
+# =====================[ SECTION 1.9: Remove All Graphical Tools (Optional) ]=====================
+start_section "1.9"
+
+# Set system to non-graphical mode
+run_command "systemctl set-default multi-user.target" "1.9.1 Set default to non-graphical target"
+run_command "systemctl mask graphical.target" "1.9.2 Mask graphical.target"
+
+# Remove desktop environments
+GUI_ENVIRONMENTS=(
+  gnome-shell
+  gnome-session
+  kde-workspace
+  xfce*
+  lxqt*
+)
+
+# Remove display managers
+DISPLAY_MANAGERS=(
+  gdm
+  lightdm
+  sddm
+)
+
+# Remove GUI utilities
+GUI_UTILITIES=(
+  gnome-terminal
+  gnome-control-center
+  gnome-system-monitor
+  gnome-disk-utility
+  gnome-calculator
+  gnome-font-viewer
+  gnome-screenshot
+  nautilus
+  konsole
+  dolphin
+  kate
+)
+
+# Remove graphical libraries and frameworks
+GRAPHICAL_LIBS=(
+  xorg-x11-server-Xorg
+  xorg-x11-utils
+  xorg-x11-xinit
+  xorg-x11-fonts*
+  xorg-x11-drivers*
+  mesa*
+  gtk*
+  qt*
+)
+
+# Remove graphical applications
+GRAPHICAL_APPS=(
+  firefox
+  libreoffice*
+  eog
+  evince
+)
+
+# Combine all packages
+ALL_GUI_PACKAGES=(
+  "${GUI_ENVIRONMENTS[@]}"
+  "${DISPLAY_MANAGERS[@]}"
+  "${GUI_UTILITIES[@]}"
+  "${GRAPHICAL_LIBS[@]}"
+  "${GRAPHICAL_APPS[@]}"
+)
+
+# Remove each package
+for pkg in "${ALL_GUI_PACKAGES[@]}"; do
+  run_command "dnf remove -y ${pkg}" "1.9 Remove package: ${pkg}"
+done
+
+# Optional: clean up orphaned dependencies
+run_command "dnf autoremove -y" "1.9.3 Remove orphaned dependencies"
+
+# Optional: verify graphical targets are disabled
+run_command "systemctl list-unit-files | grep graphical.target" "1.9.4 Verify graphical target status"
 
 
 # =====================[ END OF CIS ORACLE LINUX 9 HARDENING SCRIPT ]=====================
