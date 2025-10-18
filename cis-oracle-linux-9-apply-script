@@ -35,6 +35,22 @@ run_command() {
         log_error "$desc"
     fi
 }
+# =====================[ ARGUMENT PARSING ]=====================
+TARGET_SECTION=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --section)
+      TARGET_SECTION="$2"
+      shift 2
+      ;;
+    *)
+      echo "❌ Unknown option: $1"
+      echo "Usage: $0 [--section <section_number>]"
+      exit 1
+      ;;
+  esac
+done
+
 
 # =====================[ MODULE DISABLING FUNCTION ]=====================
 disable_module() {
@@ -46,299 +62,320 @@ disable_module() {
   echo "blacklist $mod" >> "/etc/modprobe.d/${mod}.conf"
 }
 
-# =====================[ SECTION 1.1.1: Disable Filesystem Kernel Modules ]=====================
-start_section "1.1.1"
-for mod in cramfs freevxfs hfs hfsplus jffs2 squashfs udf usb-storage; do
-  run_command "disable_module $mod" "1.1.1.x Disable $mod kernel module"
-done
-run_command "dnf remove -y cramfs-utils squashfs-tools" "1.1.1.9 Remove unused filesystem tools"
-
-# =====================[ SECTION 1.1.2: Configure Filesystem Partitions ]=====================
-start_section "1.1.2"
-
-# Helper function to enforce mount options in /etc/fstab
-enforce_mount_option() {
-  local mount_point="$1"
-  local option="$2"
-  local checklist="$3"
-  run_command "sed -i \"/[[:space:]]${mount_point}[[:space:]]/ s/defaults/defaults,${option}/\" /etc/fstab" "${checklist} Set ${option} on ${mount_point}"
-}
-
-# /tmp
-enforce_mount_option "/tmp" "nodev" "1.1.2.1.2"
-enforce_mount_option "/tmp" "nosuid" "1.1.2.1.3"
-enforce_mount_option "/tmp" "noexec" "1.1.2.1.4"
-
-# /dev/shm
-enforce_mount_option "/dev/shm" "nodev" "1.1.2.2.2"
-enforce_mount_option "/dev/shm" "nosuid" "1.1.2.2.3"
-enforce_mount_option "/dev/shm" "noexec" "1.1.2.2.4"
-
-# /home
-enforce_mount_option "/home" "nodev" "1.1.2.3.2"
-enforce_mount_option "/home" "nosuid" "1.1.2.3.3"
-
-# /var
-enforce_mount_option "/var" "nodev" "1.1.2.4.2"
-enforce_mount_option "/var" "nosuid" "1.1.2.4.3"
-
-# /var/tmp
-enforce_mount_option "/var/tmp" "nodev" "1.1.2.5.2"
-enforce_mount_option "/var/tmp" "nosuid" "1.1.2.5.3"
-enforce_mount_option "/var/tmp" "noexec" "1.1.2.5.4"
-
-# /var/log
-enforce_mount_option "/var/log" "nodev" "1.1.2.6.2"
-enforce_mount_option "/var/log" "nosuid" "1.1.2.6.3"
-enforce_mount_option "/var/log" "noexec" "1.1.2.6.4"
-
-# /var/log/audit
-enforce_mount_option "/var/log/audit" "nodev" "1.1.2.7.2"
-enforce_mount_option "/var/log/audit" "nosuid" "1.1.2.7.3"
-enforce_mount_option "/var/log/audit" "noexec" "1.1.2.7.4"
-
-# Apply all mount changes
-run_command "mount -a" "Apply updated mount options from /etc/fstab"
-
-# =====================[ SECTION 1.2.1: Ensure package manager repositories are configured ]=====================
-start_section "1.2.1"
-
-# Check for enabled repositories and ensure they are official Oracle Linux sources
-run_command "dnf repolist" "1.2.1 List enabled repositories"
-
-# Disable any third-party or custom repos (manual review may be needed)
-run_command "find /etc/yum.repos.d/ -name '*.repo' -exec grep -H 'enabled=1' {} \;" "1.2.1 Review enabled .repo files"
-
-# Optional: disable non-Oracle repos (example)
-run_command "dnf config-manager --disable some-third-party-repo" "1.2.1 Disable non-official repo"
-
-# Optional: enable Oracle Linux base repos if missing
-run_command "dnf config-manager --enable ol9_baseos_latest ol9_appstream" "1.2.1 Ensure Oracle Linux base repos are enabled"
-
-# =====================[ SECTION 1.2.2: Update system packages ]=====================
-start_section "1.2.2"
-
-# Update system packages
-##run_command "dnf update -y" "1.2.2 Update system packages"
-
-
-# =====================[ SECTION 1.3.1.1: Ensure SELinux is installed ]=====================
-start_section "1.3.1.1"
-
-# Install SELinux core packages
-##run_command "dnf install -y libselinux policycoreutils selinux-policy selinux-policy-targeted" "1.3.1.1 Install SELinux packages"
-
-# =====================[ SECTION 1.3.1.2: Ensure SELinux is not disabled in bootloader config ]=====================
-start_section "1.3.1.2"
-
-# Remove any SELinux-disabling arguments from all kernels
-run_command "grubby --update-kernel ALL --remove-args 'selinux=0 enforcing=0'" "1.3.1.2 Remove SELinux-disabling kernel arguments"
-
-# If any kernelopts still contain selinux=0 or enforcing=0, regenerate GRUB config
-run_command "grep -Prsq -- '\\h*([^#\\n\\r]+\\h+)?kernelopts=([^#\\n\\r]+\\h+)?(selinux|enforcing)=0\\b' /boot/grub2 /boot/efi && grub2-mkconfig -o \$(grep -Prl -- '\\h*([^#\\n\\r]+\\h+)?kernelopts=([^#\\n\\r]+\\h+)?(selinux|enforcing)=0\\b' /boot/grub2 /boot/efi)" "1.3.1.2 Regenerate GRUB config if SELinux is disabled"
-
-# =====================[ SECTION 1.3.1.3: Ensure SELinux policy is configured ]=====================
-start_section "1.3.1.3"
-
-# Set SELINUXTYPE to targeted in /etc/selinux/config
-run_command "sed -i 's/^SELINUXTYPE=.*/SELINUXTYPE=targeted/' /etc/selinux/config" "1.3.1.3 Set SELINUXTYPE=targeted"
-
-# =====================[ SECTION 1.3.1.4: Ensure SELinux mode is not disabled ]=====================
-start_section "1.3.1.4"
-
-# Set SELINUX to enforcing if it's disabled
-run_command "sed -i 's/^SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config" "1.3.1.4 Set SELINUX=enforcing in config file"
-
-# =====================[ *MANUAL* SECTION 1.3.1.6: Ensure no unconfined services exist (Manual) ]=====================
-start_section "1.3.1.6"
-
-echo "Manual review required: Identify unconfined services using:"
-echo "  ps -eZ | grep unconfined_service"
-echo "  systemctl status <service>"
-
-echo "If a service is unconfined and required, create a custom SELinux policy:"
-echo "  1. Write a policy file (e.g., service_allowlist_policy.te)"
-echo "  2. Compile it: checkmodule -M -m -o service_allowlist_policy.mod service_allowlist_policy.te"
-echo "  3. Package it: semodule_package -o service_allowlist_policy.pp -m service_allowlist_policy.mod"
-echo "  4. Load it: semodule -i service_allowlist_policy.pp"
-echo "  5. Apply context: chcon -t my_service_exec_t /path/to/service_binary"
-
-# =====================[ SECTION 1.3.1.7: Remove mcstrans ]=====================
-start_section "1.3.1.7"
-
-run_command "dnf remove -y mcstrans" "1.3.1.7 Remove MCS Translation Service (mcstrans)"
-
-# =====================[ SECTION 1.3.1.8: Remove setroubleshoot ]=====================
-start_section "1.3.1.8"
-
-run_command "dnf remove -y setroubleshoot" "1.3.1.8 Remove SETroubleshoot package"
-
-# =====================[ SECTION 1.4.1: Ensure bootloader password is set ]=====================
-start_section "1.4.1"
-
-##run_command "grub2-setpassword" "1.4.1 Set GRUB bootloader password"
-
-# =====================[ SECTION 1.4.2: Ensure access to bootloader config is configured ]=====================
-start_section "1.4.2"
-
-# Detect if system uses UEFI
-if [ -d /boot/efi/EFI ]; then
-  run_command "sed -i '/\\/boot\\/efi/ s/defaults/defaults,umask=0027,fmask=0077,uid=0,gid=0/' /etc/fstab" "1.4.2 Set secure mount options for /boot/efi (UEFI system)"
-  echo "⚠️ A reboot may be required to apply /boot/efi mount changes."
-else
-  # BIOS system: secure GRUB files
-  run_command "[ -f /boot/grub2/grub.cfg ] && chown root:root /boot/grub2/grub.cfg" "1.4.2 Set ownership on grub.cfg"
-  run_command "[ -f /boot/grub2/grub.cfg ] && chmod u-x,go-rwx /boot/grub2/grub.cfg" "1.4.2 Set permissions on grub.cfg"
-
-  run_command "[ -f /boot/grub2/grubenv ] && chown root:root /boot/grub2/grubenv" "1.4.2 Set ownership on grubenv"
-  run_command "[ -f /boot/grub2/grubenv ] && chmod u-x,go-rwx /boot/grub2/grubenv" "1.4.2 Set permissions on grubenv"
-
-  run_command "[ -f /boot/grub2/user.cfg ] && chown root:root /boot/grub2/user.cfg" "1.4.2 Set ownership on user.cfg"
-  run_command "[ -f /boot/grub2/user.cfg ] && chmod u-x,go-rwx /boot/grub2/user.cfg" "1.4.2 Set permissions on user.cfg"
-fi
-# =====================[ SECTION 1.5.1: Ensure ASLR is enabled ]=====================
-start_section "1.5.1"
-
-# Set the persistent configuration
-run_command "printf '\nkernel.randomize_va_space = 2\n' >> /etc/sysctl.d/60-kernel_sysctl.conf" "1.5.1 Configure ASLR in sysctl.d"
-
-# Apply the setting immediately
-run_command "sysctl -w kernel.randomize_va_space=2" "1.5.1 Apply ASLR setting at runtime"
-
-# =====================[ SECTION 1.5.2: Ensure ptrace_scope is restricted ]=====================
-start_section "1.5.2"
-
-# Set the persistent configuration
-run_command "printf '\nkernel.yama.ptrace_scope = 1\n' >> /etc/sysctl.d/60-kernel_sysctl.conf" "1.5.2 Configure ptrace_scope in sysctl.d"
-
-# Apply the setting immediately
-run_command "sysctl -w kernel.yama.ptrace_scope=1" "1.5.2 Apply ptrace_scope setting at runtime"
-
-##REM### =====================[ SECTION 1.5.3: Ensure core dump backtraces are disabled ]=====================
-##REM##start_section "1.5.3"
-##REM##
-##REM### Create config directory if missing
-##REM##run_command "[ ! -d /etc/systemd/coredump.conf.d/ ] && mkdir -p /etc/systemd/coredump.conf.d/" "1.5.3 Ensure coredump config directory exists"
-##REM##
-##REM### Add or update ProcessSizeMax=0 in the config file
-##REM##if grep -Psq -- '^\h*
-##REM##
-##REM##\[Coredump\]
-##REM##
-##REM##' /etc/systemd/coredump.conf.d/60-coredump.conf; then
-##REM##  run_command "printf '%s\n' 'ProcessSizeMax=0' >> /etc/systemd/coredump.conf.d/60-coredump.conf" "1.5.3 Append ProcessSizeMax=0 to existing [Coredump] section"
-##REM##else
-##REM##  run_command "printf '%s\n' '[Coredump]' 'ProcessSizeMax=0' > /etc/systemd/coredump.conf.d/60-coredump.conf" "1.5.3 Create [Coredump] section with ProcessSizeMax=0"
-##REM##fi
-##REM##
-##REM### =====================[ SECTION 1.5.4: Ensure core dump storage is disabled ]=====================
-##REM##start_section "1.5.4"
-##REM##
-##REM### Create config directory if missing
-##REM##run_command "[ ! -d /etc/systemd/coredump.conf.d/ ] && mkdir -p /etc/systemd/coredump.conf.d/" "1.5.4 Ensure coredump config directory exists"
-##REM##
-##REM### Add or update Storage=none in the config file
-##REM##if grep -Psq -- '^\h*
-##REM##
-##REM##\[Coredump\]
-##REM##
-##REM##' /etc/systemd/coredump.conf.d/60-coredump.conf; then
-##REM##  run_command "printf '%s\n' 'Storage=none' >> /etc/systemd/coredump.conf.d/60-coredump.conf" "1.5.4 Append Storage=none to existing [Coredump] section"
-##REM##else
-##REM##  run_command "printf '%s\n' '[Coredump]' 'Storage=none' > /etc/systemd/coredump.conf.d/60-coredump.conf" "1.5.4 Create [Coredump] section with Storage=none"
-##REM##fi
-
-# =====================[ SECTION 1.5.3 & 1.5.4: Disable Core Dumps ]=====================
-start_section "1.5.3 & 1.5.4"
-
-COREDUMP_DIR="/etc/systemd/coredump.conf.d"
-COREDUMP_CONF="${COREDUMP_DIR}/60-coredump.conf"
-
-# Ensure config directory exists
-run_command "mkdir -p ${COREDUMP_DIR}" "Ensure coredump config directory exists"
-
-# Create or update config file with both settings
-if grep -q '^
-
-\[Coredump\]
-
-' "$COREDUMP_CONF" 2>/dev/null; then
-  # Append settings if section exists
-  run_command "grep -q '^ProcessSizeMax=' ${COREDUMP_CONF} || echo 'ProcessSizeMax=0' >> ${COREDUMP_CONF}" "Append ProcessSizeMax=0"
-  run_command "grep -q '^Storage=' ${COREDUMP_CONF} || echo 'Storage=none' >> ${COREDUMP_CONF}" "Append Storage=none"
-else
-  # Create section with both settings
-  run_command "printf '%s\n' '[Coredump]' 'ProcessSizeMax=0' 'Storage=none' > ${COREDUMP_CONF}" "Create [Coredump] section with settings"
+########################################################################################
+if [[ -z "$TARGET_SECTION" || "$TARGET_SECTION" == "1.1" ]]; then
+ # =====================[ SECTION 1.1.1: Disable Filesystem Kernel Modules ]=====================
+ start_section "1.1.1"
+ for mod in cramfs freevxfs hfs hfsplus jffs2 squashfs udf usb-storage; do
+   run_command "disable_module $mod" "1.1.1.x Disable $mod kernel module"
+ done
+ run_command "dnf remove -y cramfs-utils squashfs-tools" "1.1.1.9 Remove unused filesystem tools"
+ 
+ # =====================[ SECTION 1.1.2: Configure Filesystem Partitions ]=====================
+ start_section "1.1.2"
+ 
+ # Helper function to enforce mount options in /etc/fstab
+ enforce_mount_option() {
+   local mount_point="$1"
+   local option="$2"
+   local checklist="$3"
+   run_command "sed -i \"/[[:space:]]${mount_point}[[:space:]]/ s/defaults/defaults,${option}/\" /etc/fstab" "${checklist} Set ${option} on ${mount_point}"
+ }
+ 
+ # /tmp
+ enforce_mount_option "/tmp" "nodev" "1.1.2.1.2"
+ enforce_mount_option "/tmp" "nosuid" "1.1.2.1.3"
+ enforce_mount_option "/tmp" "noexec" "1.1.2.1.4"
+ 
+ # /dev/shm
+ enforce_mount_option "/dev/shm" "nodev" "1.1.2.2.2"
+ enforce_mount_option "/dev/shm" "nosuid" "1.1.2.2.3"
+ enforce_mount_option "/dev/shm" "noexec" "1.1.2.2.4"
+ 
+ # /home
+ enforce_mount_option "/home" "nodev" "1.1.2.3.2"
+ enforce_mount_option "/home" "nosuid" "1.1.2.3.3"
+ 
+ # /var
+ enforce_mount_option "/var" "nodev" "1.1.2.4.2"
+ enforce_mount_option "/var" "nosuid" "1.1.2.4.3"
+ 
+ # /var/tmp
+ enforce_mount_option "/var/tmp" "nodev" "1.1.2.5.2"
+ enforce_mount_option "/var/tmp" "nosuid" "1.1.2.5.3"
+ enforce_mount_option "/var/tmp" "noexec" "1.1.2.5.4"
+ 
+ # /var/log
+ enforce_mount_option "/var/log" "nodev" "1.1.2.6.2"
+ enforce_mount_option "/var/log" "nosuid" "1.1.2.6.3"
+ enforce_mount_option "/var/log" "noexec" "1.1.2.6.4"
+ 
+ # /var/log/audit
+ enforce_mount_option "/var/log/audit" "nodev" "1.1.2.7.2"
+ enforce_mount_option "/var/log/audit" "nosuid" "1.1.2.7.3"
+ enforce_mount_option "/var/log/audit" "noexec" "1.1.2.7.4"
+ 
+ # Apply all mount changes
+ run_command "mount -a" "Apply updated mount options from /etc/fstab"
 fi
 
-# =====================[ SECTION 1.6.1: Ensure system-wide crypto policy is not set to LEGACY ]=====================
-start_section "1.6.1"
+########################################################################################
+if [[ -z "$TARGET_SECTION" || "$TARGET_SECTION" == "1.2" ]]; then
+ # =====================[ SECTION 1.2.1: Ensure package manager repositories are configured ]=====================
+ start_section "1.2.1"
+ 
+ # Check for enabled repositories and ensure they are official Oracle Linux sources
+ run_command "dnf repolist" "1.2.1 List enabled repositories"
+ 
+ # Disable any third-party or custom repos (manual review may be needed)
+ run_command "find /etc/yum.repos.d/ -name '*.repo' -exec grep -H 'enabled=1' {} \;" "1.2.1 Review enabled .repo files"
+ 
+ # Optional: disable non-Oracle repos (example)
+ run_command "dnf config-manager --disable some-third-party-repo" "1.2.1 Disable non-official repo"
+ 
+ # Optional: enable Oracle Linux base repos if missing
+ run_command "dnf config-manager --enable ol9_baseos_latest ol9_appstream" "1.2.1 Ensure Oracle Linux base repos are enabled"
+ 
+ # =====================[ SECTION 1.2.2: Update system packages ]=====================
+ start_section "1.2.2"
+ 
+ # Update system packages
+ ##run_command "dnf update -y" "1.2.2 Update system packages"
+ 
+ 
+ # =====================[ SECTION 1.3.1.1: Ensure SELinux is installed ]=====================
+ start_section "1.3.1.1"
+ 
+ # Install SELinux core packages
+ ##run_command "dnf install -y libselinux policycoreutils selinux-policy selinux-policy-targeted" "1.3.1.1 Install SELinux packages"
+fi
 
-# Set crypto policy to DEFAULT
-run_command "update-crypto-policies --set DEFAULT" "1.6.1 Set crypto policy to DEFAULT"
+########################################################################################
+if [[ -z "$TARGET_SECTION" || "$TARGET_SECTION" == "1.3" ]]; then
+ # =====================[ SECTION 1.3.1.2: Ensure SELinux is not disabled in bootloader config ]=====================
+ start_section "1.3.1.2"
+ 
+ # Remove any SELinux-disabling arguments from all kernels
+ run_command "grubby --update-kernel ALL --remove-args 'selinux=0 enforcing=0'" "1.3.1.2 Remove SELinux-disabling kernel arguments"
+ 
+ # If any kernelopts still contain selinux=0 or enforcing=0, regenerate GRUB config
+ run_command "grep -Prsq -- '\\h*([^#\\n\\r]+\\h+)?kernelopts=([^#\\n\\r]+\\h+)?(selinux|enforcing)=0\\b' /boot/grub2 /boot/efi && grub2-mkconfig -o \$(grep -Prl -- '\\h*([^#\\n\\r]+\\h+)?kernelopts=([^#\\n\\r]+\\h+)?(selinux|enforcing)=0\\b' /boot/grub2 /boot/efi)" "1.3.1.2 Regenerate GRUB config if SELinux is disabled"
+ 
+ # =====================[ SECTION 1.3.1.3: Ensure SELinux policy is configured ]=====================
+ start_section "1.3.1.3"
+ 
+ # Set SELINUXTYPE to targeted in /etc/selinux/config
+ run_command "sed -i 's/^SELINUXTYPE=.*/SELINUXTYPE=targeted/' /etc/selinux/config" "1.3.1.3 Set SELINUXTYPE=targeted"
+ 
+ # =====================[ SECTION 1.3.1.4: Ensure SELinux mode is not disabled ]=====================
+ start_section "1.3.1.4"
+ 
+ # Set SELINUX to enforcing if it's disabled
+ run_command "sed -i 's/^SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config" "1.3.1.4 Set SELINUX=enforcing in config file"
+ 
+ # =====================[ *MANUAL* SECTION 1.3.1.6: Ensure no unconfined services exist (Manual) ]=====================
+ start_section "1.3.1.6"
+ 
+ echo "Manual review required: Identify unconfined services using:"
+ echo "  ps -eZ | grep unconfined_service"
+ echo "  systemctl status <service>"
+ 
+ echo "If a service is unconfined and required, create a custom SELinux policy:"
+ echo "  1. Write a policy file (e.g., service_allowlist_policy.te)"
+ echo "  2. Compile it: checkmodule -M -m -o service_allowlist_policy.mod service_allowlist_policy.te"
+ echo "  3. Package it: semodule_package -o service_allowlist_policy.pp -m service_allowlist_policy.mod"
+ echo "  4. Load it: semodule -i service_allowlist_policy.pp"
+ echo "  5. Apply context: chcon -t my_service_exec_t /path/to/service_binary"
+ 
+ # =====================[ SECTION 1.3.1.7: Remove mcstrans ]=====================
+ start_section "1.3.1.7"
+ 
+ run_command "dnf remove -y mcstrans" "1.3.1.7 Remove MCS Translation Service (mcstrans)"
+ 
+ # =====================[ SECTION 1.3.1.8: Remove setroubleshoot ]=====================
+ start_section "1.3.1.8"
+ 
+ run_command "dnf remove -y setroubleshoot" "1.3.1.8 Remove SETroubleshoot package"
+fi
 
-# Apply the updated policy
-run_command "update-crypto-policies" "1.6.1 Apply updated crypto policy"
+########################################################################################
+if [[ -z "$TARGET_SECTION" || "$TARGET_SECTION" == "1.4" ]]; then
+ # =====================[ SECTION 1.4.1: Ensure bootloader password is set ]=====================
+ start_section "1.4.1"
+ 
+ ##run_command "grub2-setpassword" "1.4.1 Set GRUB bootloader password"
+ 
+ # =====================[ SECTION 1.4.2: Ensure access to bootloader config is configured ]=====================
+ start_section "1.4.2"
+ 
+ # Detect if system uses UEFI
+ if [ -d /boot/efi/EFI ]; then
+   run_command "sed -i '/\\/boot\\/efi/ s/defaults/defaults,umask=0027,fmask=0077,uid=0,gid=0/' /etc/fstab" "1.4.2 Set secure mount options for /boot/efi (UEFI system)"
+   echo "⚠️ A reboot may be required to apply /boot/efi mount changes."
+ else
+   # BIOS system: secure GRUB files
+   run_command "[ -f /boot/grub2/grub.cfg ] && chown root:root /boot/grub2/grub.cfg" "1.4.2 Set ownership on grub.cfg"
+   run_command "[ -f /boot/grub2/grub.cfg ] && chmod u-x,go-rwx /boot/grub2/grub.cfg" "1.4.2 Set permissions on grub.cfg"
+ 
+   run_command "[ -f /boot/grub2/grubenv ] && chown root:root /boot/grub2/grubenv" "1.4.2 Set ownership on grubenv"
+   run_command "[ -f /boot/grub2/grubenv ] && chmod u-x,go-rwx /boot/grub2/grubenv" "1.4.2 Set permissions on grubenv"
+ 
+   run_command "[ -f /boot/grub2/user.cfg ] && chown root:root /boot/grub2/user.cfg" "1.4.2 Set ownership on user.cfg"
+   run_command "[ -f /boot/grub2/user.cfg ] && chmod u-x,go-rwx /boot/grub2/user.cfg" "1.4.2 Set permissions on user.cfg"
+ fi
+fi
+ 
+########################################################################################
+if [[ -z "$TARGET_SECTION" || "$TARGET_SECTION" == "1.5" ]]; then
+ # =====================[ SECTION 1.5.1: Ensure ASLR is enabled ]=====================
+ start_section "1.5.1"
+ 
+ # Set the persistent configuration
+ run_command "printf '\nkernel.randomize_va_space = 2\n' >> /etc/sysctl.d/60-kernel_sysctl.conf" "1.5.1 Configure ASLR in sysctl.d"
+ 
+ # Apply the setting immediately
+ run_command "sysctl -w kernel.randomize_va_space=2" "1.5.1 Apply ASLR setting at runtime"
+ 
+ # =====================[ SECTION 1.5.2: Ensure ptrace_scope is restricted ]=====================
+ start_section "1.5.2"
+ 
+ # Set the persistent configuration
+ run_command "printf '\nkernel.yama.ptrace_scope = 1\n' >> /etc/sysctl.d/60-kernel_sysctl.conf" "1.5.2 Configure ptrace_scope in sysctl.d"
+ 
+ # Apply the setting immediately
+ run_command "sysctl -w kernel.yama.ptrace_scope=1" "1.5.2 Apply ptrace_scope setting at runtime"
+ 
+ ##REM### =====================[ SECTION 1.5.3: Ensure core dump backtraces are disabled ]=====================
+ ##REM##start_section "1.5.3"
+ ##REM##
+ ##REM### Create config directory if missing
+ ##REM##run_command "[ ! -d /etc/systemd/coredump.conf.d/ ] && mkdir -p /etc/systemd/coredump.conf.d/" "1.5.3 Ensure coredump config directory exists"
+ ##REM##
+ ##REM### Add or update ProcessSizeMax=0 in the config file
+ ##REM##if grep -Psq -- '^\h*
+ ##REM##
+ ##REM##\[Coredump\]
+ ##REM##
+ ##REM##' /etc/systemd/coredump.conf.d/60-coredump.conf; then
+ ##REM##  run_command "printf '%s\n' 'ProcessSizeMax=0' >> /etc/systemd/coredump.conf.d/60-coredump.conf" "1.5.3 Append ProcessSizeMax=0 to existing [Coredump] section"
+ ##REM##else
+ ##REM##  run_command "printf '%s\n' '[Coredump]' 'ProcessSizeMax=0' > /etc/systemd/coredump.conf.d/60-coredump.conf" "1.5.3 Create [Coredump] section with ProcessSizeMax=0"
+ ##REM##fi
+ ##REM##
+ ##REM### =====================[ SECTION 1.5.4: Ensure core dump storage is disabled ]=====================
+ ##REM##start_section "1.5.4"
+ ##REM##
+ ##REM### Create config directory if missing
+ ##REM##run_command "[ ! -d /etc/systemd/coredump.conf.d/ ] && mkdir -p /etc/systemd/coredump.conf.d/" "1.5.4 Ensure coredump config directory exists"
+ ##REM##
+ ##REM### Add or update Storage=none in the config file
+ ##REM##if grep -Psq -- '^\h*
+ ##REM##
+ ##REM##\[Coredump\]
+ ##REM##
+ ##REM##' /etc/systemd/coredump.conf.d/60-coredump.conf; then
+ ##REM##  run_command "printf '%s\n' 'Storage=none' >> /etc/systemd/coredump.conf.d/60-coredump.conf" "1.5.4 Append Storage=none to existing [Coredump] section"
+ ##REM##else
+ ##REM##  run_command "printf '%s\n' '[Coredump]' 'Storage=none' > /etc/systemd/coredump.conf.d/60-coredump.conf" "1.5.4 Create [Coredump] section with Storage=none"
+ ##REM##fi
+ 
+ # =====================[ SECTION 1.5.3 & 1.5.4: Disable Core Dumps ]=====================
+ start_section "1.5.3 & 1.5.4"
+ 
+ COREDUMP_DIR="/etc/systemd/coredump.conf.d"
+ COREDUMP_CONF="${COREDUMP_DIR}/60-coredump.conf"
+ 
+ # Ensure config directory exists
+ run_command "mkdir -p ${COREDUMP_DIR}" "Ensure coredump config directory exists"
+ 
+ # Create or update config file with both settings
+ if grep -q '^
+ 
+ \[Coredump\]
+ 
+ ' "$COREDUMP_CONF" 2>/dev/null; then
+   # Append settings if section exists
+   run_command "grep -q '^ProcessSizeMax=' ${COREDUMP_CONF} || echo 'ProcessSizeMax=0' >> ${COREDUMP_CONF}" "Append ProcessSizeMax=0"
+   run_command "grep -q '^Storage=' ${COREDUMP_CONF} || echo 'Storage=none' >> ${COREDUMP_CONF}" "Append Storage=none"
+ else
+   # Create section with both settings
+   run_command "printf '%s\n' '[Coredump]' 'ProcessSizeMax=0' 'Storage=none' > ${COREDUMP_CONF}" "Create [Coredump] section with settings"
+ fi
+fi
 
-# =====================[ SECTION 1.6.2: Ensure CRYPTO_POLICY is not set in sshd config ]=====================
-start_section "1.6.2"
+########################################################################################
+if [[ -z "$TARGET_SECTION" || "$TARGET_SECTION" == "1.6" ]]; then
+ # =====================[ SECTION 1.6.1: Ensure system-wide crypto policy is not set to LEGACY ]=====================
+ start_section "1.6.1"
+ 
+ # Set crypto policy to DEFAULT
+ run_command "update-crypto-policies --set DEFAULT" "1.6.1 Set crypto policy to DEFAULT"
+ 
+ # Apply the updated policy
+ run_command "update-crypto-policies" "1.6.1 Apply updated crypto policy"
+ 
+ # =====================[ SECTION 1.6.2: Ensure CRYPTO_POLICY is not set in sshd config ]=====================
+ start_section "1.6.2"
+ 
+ # Comment out any CRYPTO_POLICY line in /etc/sysconfig/sshd
+ run_command "sed -ri 's/^\\s*(CRYPTO_POLICY\\s*=.*)$/# \\1/' /etc/sysconfig/sshd" "1.6.2 Comment out CRYPTO_POLICY in sshd config"
+ 
+ # Reload sshd to apply changes
+ run_command "systemctl reload sshd" "1.6.2 Reload sshd to apply updated configuration"
+ 
+ # =====================[ SECTION 1.6.3: Disable SHA1 in system-wide crypto policy ]=====================
+ start_section "1.6.3"
+ 
+ # Create the NO-SHA1 subpolicy module
+ run_command "printf '%s\n' '# Drop SHA1 hash and signature support' 'hash = -SHA1' 'sign = -*-SHA1' 'sha1_in_certs = 0' > /etc/crypto-policies/policies/modules/NO-SHA1.pmod" "1.6.3 Create NO-SHA1 crypto subpolicy"
+ 
+ # Apply the updated crypto policy with NO-SHA1
+ run_command "update-crypto-policies --set DEFAULT:NO-SHA1" "1.6.3 Apply crypto policy with NO-SHA1"
+ 
+ # =====================[ SECTION 1.6.4: Disable weak MACs in system-wide crypto policy ]=====================
+ start_section "1.6.4"
+ 
+ # Create the NO-WEAKMAC subpolicy module
+ run_command "printf '%s\n' '# Disable MACs less than 128 bits' 'mac = -*-64' > /etc/crypto-policies/policies/modules/NO-WEAKMAC.pmod" "1.6.4 Create NO-WEAKMAC crypto subpolicy"
+ 
+ # Apply the updated crypto policy with NO-WEAKMAC (and NO-SHA1 if already used)
+ run_command "update-crypto-policies --set DEFAULT:NO-SHA1:NO-WEAKMAC" "1.6.4 Apply crypto policy with NO-WEAKMAC"
+ 
+ # =====================[ SECTION 1.6.5: Disable CBC ciphers for SSH in crypto policy ]=====================
+ start_section "1.6.5"
+ 
+ # Create the NO-SSHCBC subpolicy module
+ run_command "printf '%s\n' '# Disable CBC mode ciphers for SSH' '# Applies to libssh and OpenSSH' 'cipher@SSH = -*-CBC' > /etc/crypto-policies/policies/modules/NO-SSHCBC.pmod" "1.6.5 Create NO-SSHCBC crypto subpolicy"
+ 
+ # Apply the updated crypto policy with NO-SSHCBC (alongside other subpolicies if used)
+ run_command "update-crypto-policies --set DEFAULT:NO-SHA1:NO-WEAKMAC:NO-SSHCBC" "1.6.5 Apply crypto policy with NO-SSHCBC"
+ 
+ # =====================[ SECTION 1.6.6: Disable CHACHA20-POLY1305 for SSH ]=====================
+ start_section "1.6.6"
+ 
+ # Create the NO-SSHCHACHA20 subpolicy module
+ run_command "printf '%s\n' '# Disable CHACHA20-POLY1305 ciphers for SSH' '# Applies to libssh and OpenSSH' 'cipher@SSH = -CHACHA20-POLY1305' > /etc/crypto-policies/policies/modules/NO-SSHCHACHA20.pmod" "1.6.6 Create NO-SSHCHACHA20 crypto subpolicy"
+ 
+ # Apply the updated crypto policy with NO-SSHCHACHA20 (alongside other subpolicies if used)
+ run_command "update-crypto-policies --set DEFAULT:NO-SHA1:NO-WEAKMAC:NO-SSHCBC:NO-SSHCHACHA20" "1.6.6 Apply crypto policy with NO-SSHCHACHA20"
+ 
+ # =====================[ SECTION 1.6.7: Disable EtM for SSH in crypto policy ]=====================
+ start_section "1.6.7"
+ 
+ # Create the NO-SSHETM subpolicy module
+ run_command "printf '%s\n' '# Disable Encrypt-then-MAC (EtM) for SSH' '# Applies to libssh and OpenSSH' 'etm@SSH = DISABLE_ETM' > /etc/crypto-policies/policies/modules/NO-SSHETM.pmod" "1.6.7 Create NO-SSHETM crypto subpolicy"
+ 
+ # Apply the updated crypto policy with NO-SSHETM (alongside other subpolicies if used)
+ run_command "update-crypto-policies --set DEFAULT:NO-SHA1:NO-WEAKMAC:NO-SSHCBC:NO-SSHCHACHA20:NO-SSHETM" "1.6.7 Apply crypto policy with NO-SSHETM"
+fi
 
-# Comment out any CRYPTO_POLICY line in /etc/sysconfig/sshd
-run_command "sed -ri 's/^\\s*(CRYPTO_POLICY\\s*=.*)$/# \\1/' /etc/sysconfig/sshd" "1.6.2 Comment out CRYPTO_POLICY in sshd config"
+###########################################################################################
+if [[ -z "$TARGET_SECTION" || "$TARGET_SECTION" == "1.7" ]]; then
+  # =====================[ SECTION 1.7: Command Line Warning Banners ]=====================
+  start_section "1.7"
 
-# Reload sshd to apply changes
-run_command "systemctl reload sshd" "1.6.2 Reload sshd to apply updated configuration"
-
-# =====================[ SECTION 1.6.3: Disable SHA1 in system-wide crypto policy ]=====================
-start_section "1.6.3"
-
-# Create the NO-SHA1 subpolicy module
-run_command "printf '%s\n' '# Drop SHA1 hash and signature support' 'hash = -SHA1' 'sign = -*-SHA1' 'sha1_in_certs = 0' > /etc/crypto-policies/policies/modules/NO-SHA1.pmod" "1.6.3 Create NO-SHA1 crypto subpolicy"
-
-# Apply the updated crypto policy with NO-SHA1
-run_command "update-crypto-policies --set DEFAULT:NO-SHA1" "1.6.3 Apply crypto policy with NO-SHA1"
-
-# =====================[ SECTION 1.6.4: Disable weak MACs in system-wide crypto policy ]=====================
-start_section "1.6.4"
-
-# Create the NO-WEAKMAC subpolicy module
-run_command "printf '%s\n' '# Disable MACs less than 128 bits' 'mac = -*-64' > /etc/crypto-policies/policies/modules/NO-WEAKMAC.pmod" "1.6.4 Create NO-WEAKMAC crypto subpolicy"
-
-# Apply the updated crypto policy with NO-WEAKMAC (and NO-SHA1 if already used)
-run_command "update-crypto-policies --set DEFAULT:NO-SHA1:NO-WEAKMAC" "1.6.4 Apply crypto policy with NO-WEAKMAC"
-
-# =====================[ SECTION 1.6.5: Disable CBC ciphers for SSH in crypto policy ]=====================
-start_section "1.6.5"
-
-# Create the NO-SSHCBC subpolicy module
-run_command "printf '%s\n' '# Disable CBC mode ciphers for SSH' '# Applies to libssh and OpenSSH' 'cipher@SSH = -*-CBC' > /etc/crypto-policies/policies/modules/NO-SSHCBC.pmod" "1.6.5 Create NO-SSHCBC crypto subpolicy"
-
-# Apply the updated crypto policy with NO-SSHCBC (alongside other subpolicies if used)
-run_command "update-crypto-policies --set DEFAULT:NO-SHA1:NO-WEAKMAC:NO-SSHCBC" "1.6.5 Apply crypto policy with NO-SSHCBC"
-
-# =====================[ SECTION 1.6.6: Disable CHACHA20-POLY1305 for SSH ]=====================
-start_section "1.6.6"
-
-# Create the NO-SSHCHACHA20 subpolicy module
-run_command "printf '%s\n' '# Disable CHACHA20-POLY1305 ciphers for SSH' '# Applies to libssh and OpenSSH' 'cipher@SSH = -CHACHA20-POLY1305' > /etc/crypto-policies/policies/modules/NO-SSHCHACHA20.pmod" "1.6.6 Create NO-SSHCHACHA20 crypto subpolicy"
-
-# Apply the updated crypto policy with NO-SSHCHACHA20 (alongside other subpolicies if used)
-run_command "update-crypto-policies --set DEFAULT:NO-SHA1:NO-WEAKMAC:NO-SSHCBC:NO-SSHCHACHA20" "1.6.6 Apply crypto policy with NO-SSHCHACHA20"
-
-# =====================[ SECTION 1.6.7: Disable EtM for SSH in crypto policy ]=====================
-start_section "1.6.7"
-
-# Create the NO-SSHETM subpolicy module
-run_command "printf '%s\n' '# Disable Encrypt-then-MAC (EtM) for SSH' '# Applies to libssh and OpenSSH' 'etm@SSH = DISABLE_ETM' > /etc/crypto-policies/policies/modules/NO-SSHETM.pmod" "1.6.7 Create NO-SSHETM crypto subpolicy"
-
-# Apply the updated crypto policy with NO-SSHETM (alongside other subpolicies if used)
-run_command "update-crypto-policies --set DEFAULT:NO-SHA1:NO-WEAKMAC:NO-SSHCBC:NO-SSHCHACHA20:NO-SSHETM" "1.6.7 Apply crypto policy with NO-SSHETM"
-
-# =====================[ SECTION 1.7: Command Line Warning Banners ]=====================
-start_section "1.7"
-
-# Static legal banner for issue and issue.net
-BANNER=$(cat << 'EOF'
+  # Static legal banner for issue and issue.net
+  BANNER=$(cat <<EOF
 ╔══════════════════════════════════════════════════════════════════════════╗
 ║                                                                          ║
 ║                  ⚠️  AUTHORIZED ACCESS ONLY  ⚠️                          ║
@@ -362,19 +399,19 @@ All data and actions are logged. Violations will be investigated and prosecuted.
 2. Immediately report any suspicious activity to IT Security.
 ──────────────────────────────────────────────────────────────────────────────
 EOF
-)
+  )
 
-run_command "echo '$BANNER' > /etc/issue" "1.7.1 Set /etc/issue banner"
-run_command "echo '$BANNER' > /etc/issue.net" "1.7.2 Set /etc/issue.net banner"
+  run_command "echo \"$BANNER\" > /etc/issue" "1.7.1 Set /etc/issue banner"
+  run_command "echo \"$BANNER\" > /etc/issue.net" "1.7.2 Set /etc/issue.net banner"
 
-# Ensure MOTD directory exists
-run_command "mkdir -p /etc/update-motd.d" "1.7.3 Create MOTD directory"
+  # Ensure MOTD directory exists
+  run_command "mkdir -p /etc/update-motd.d" "1.7.3 Create MOTD directory"
 
-# Disable default MOTD scripts
-run_command "chmod -x /etc/update-motd.d/*" "1.7.3 Disable default MOTD scripts"
+  # Disable default MOTD scripts
+  run_command "chmod -x /etc/update-motd.d/*" "1.7.3 Disable default MOTD scripts"
 
-# Create custom MOTD script with system info and hostname-based welcome
-cat << 'EOF' > /etc/update-motd.d/00-custom
+  # Create custom MOTD script
+  cat <<'EOF' > /etc/update-motd.d/00-custom
 #!/bin/bash
 
 GREEN='\033[0;32m'
@@ -400,621 +437,640 @@ echo
 echo -e "${GREEN}🔐 Reminder: Unauthorized access is prohibited. All activity is monitored.${NC}"
 EOF
 
-run_command "echo 'Custom MOTD script created at /etc/update-motd.d/00-custom'" "1.7.4 Create custom MOTD script"
-run_command "chmod +x /etc/update-motd.d/00-custom" "1.7.5 Make MOTD script executable"
-run_command "chmod 644 /etc/issue /etc/issue.net /etc/update-motd.d/00-custom" "1.7.6 Set banner file permissions"
-run_command "chown root:root /etc/issue /etc/issue.net /etc/update-motd.d/00-custom" "1.7.7 Set banner file ownership"
-
-# =====================[ SECTION 1.8.1: Remove GNOME Display Manager ]=====================
-start_section "1.8.1"
-
-# Remove gdm package if installed
-run_command "dnf remove -y gdm" "1.8.1 Remove GNOME Display Manager (gdm)"
-
-
-# =====================[ SECTION 1.8.2: Configure GDM Login Banner ]=====================
-start_section "1.8.2"
-
-# Check if GDM is installed
-if rpm -q gdm &>/dev/null; then
-  run_command "echo 'GDM is installed, proceeding with banner configuration'" "1.8.2.1 Verify GDM presence"
-
-  # Define profile and banner message
-  GDM_PROFILE="gdm"
-  BANNER_TEXT="'Authorized uses only. All activity may be monitored and reported'"
-
-  # Create dconf profile if missing
-  run_command "mkdir -p /etc/dconf/profile" "1.8.2.2 Ensure /etc/dconf/profile exists"
-  run_command "echo -e 'user-db:user\nsystem-db:${GDM_PROFILE}\nfile-db:/usr/share/${GDM_PROFILE}/greeter-dconf-defaults' > /etc/dconf/profile/${GDM_PROFILE}" "1.8.2.3 Create GDM dconf profile"
-
-  # Create dconf database directory
-  run_command "mkdir -p /etc/dconf/db/${GDM_PROFILE}.d" "1.8.2.4 Create GDM dconf database directory"
-
-  # Create or update banner settings
-  BANNER_FILE="/etc/dconf/db/${GDM_PROFILE}.d/01-banner-message"
-  run_command "echo -e '[org/gnome/login-screen]\nbanner-message-enable=true\nbanner-message-text=${BANNER_TEXT}' > ${BANNER_FILE}" "1.8.2.5 Write GDM banner settings"
-
-  # Apply changes
-  run_command "dconf update" "1.8.2.6 Apply dconf changes"
-
-else
-  echo " - GDM is not installed. Skipping 1.8.2 configuration."
+  run_command "echo 'Custom MOTD script created at /etc/update-motd.d/00-custom'" "1.7.4 Create custom MOTD script"
+  run_command "chmod +x /etc/update-motd.d/00-custom" "1.7.5 Make MOTD script executable"
+  run_command "chmod 644 /etc/issue /etc/issue.net /etc/update-motd.d/00-custom" "1.7.6 Set banner file permissions"
+  run_command "chown root:root /etc/issue /etc/issue.net /etc/update-motd.d/00-custom" "1.7.7 Set banner file ownership"
 fi
 
-# =====================[ SECTION 1.8.3: Disable GDM User List ]=====================
-start_section "1.8.3"
-
-GDM_PROFILE="gdm"
-GDM_DB_DIR="/etc/dconf/db/${GDM_PROFILE}.d"
-GDM_PROFILE_FILE="/etc/dconf/profile/${GDM_PROFILE}"
-GDM_KEYFILE="${GDM_DB_DIR}/00-login-screen"
-
-# Ensure profile file exists
-run_command "mkdir -p /etc/dconf/profile" "1.8.3.1 Ensure dconf profile directory exists"
-run_command "echo -e 'user-db:user\nsystem-db:${GDM_PROFILE}\nfile-db:/usr/share/${GDM_PROFILE}/greeter-dconf-defaults' > ${GDM_PROFILE_FILE}" "1.8.3.2 Create GDM profile file"
-
-# Ensure dconf database directory exists
-run_command "mkdir -p ${GDM_DB_DIR}" "1.8.3.3 Create GDM dconf database directory"
-
-# Write or update disable-user-list setting
-if ! grep -Piq '^\h*disable-user-list\h*=\h*true\b' ${GDM_DB_DIR}/* 2>/dev/null; then
-  if ! grep -Piq '^\h*
-
-\[org/gnome/login-screen\]
-
-' ${GDM_DB_DIR}/* 2>/dev/null; then
-    run_command "echo -e '[org/gnome/login-screen]\n# Do not show the user list\ndisable-user-list=true' > ${GDM_KEYFILE}" "1.8.3.4 Create GDM keyfile with disable-user-list"
-  else
-    TARGET_FILE=$(grep -Pil '^\h*
-
-\[org/gnome/login-screen\]
-
-' ${GDM_DB_DIR}/* | head -n 1)
-    run_command "sed -ri '/^\s*
-
-\[org\/gnome\/login-screen\]
-
-/ a\\# Do not show the user list\ndisable-user-list=true' ${TARGET_FILE}" "1.8.3.5 Append disable-user-list to existing keyfile"
-  fi
+########################################################################################
+if [[ -z "$TARGET_SECTION" || "$TARGET_SECTION" == "1.8" ]]; then
+ # =====================[ SECTION 1.8.1: Remove GNOME Display Manager ]=====================
+ start_section "1.8.1"
+ 
+ # Remove gdm package if installed
+ run_command "dnf remove -y gdm" "1.8.1 Remove GNOME Display Manager (gdm)"
+ 
+ 
+ # =====================[ SECTION 1.8.2: Configure GDM Login Banner ]=====================
+ start_section "1.8.2"
+ 
+ # Check if GDM is installed
+ if rpm -q gdm &>/dev/null; then
+   run_command "echo 'GDM is installed, proceeding with banner configuration'" "1.8.2.1 Verify GDM presence"
+ 
+   # Define profile and banner message
+   GDM_PROFILE="gdm"
+   BANNER_TEXT="'Authorized uses only. All activity may be monitored and reported'"
+ 
+   # Create dconf profile if missing
+   run_command "mkdir -p /etc/dconf/profile" "1.8.2.2 Ensure /etc/dconf/profile exists"
+   run_command "echo -e 'user-db:user\nsystem-db:${GDM_PROFILE}\nfile-db:/usr/share/${GDM_PROFILE}/greeter-dconf-defaults' > /etc/dconf/profile/${GDM_PROFILE}" "1.8.2.3 Create GDM dconf profile"
+ 
+   # Create dconf database directory
+   run_command "mkdir -p /etc/dconf/db/${GDM_PROFILE}.d" "1.8.2.4 Create GDM dconf database directory"
+ 
+   # Create or update banner settings
+   BANNER_FILE="/etc/dconf/db/${GDM_PROFILE}.d/01-banner-message"
+   run_command "echo -e '[org/gnome/login-screen]\nbanner-message-enable=true\nbanner-message-text=${BANNER_TEXT}' > ${BANNER_FILE}" "1.8.2.5 Write GDM banner settings"
+ 
+   # Apply changes
+   run_command "dconf update" "1.8.2.6 Apply dconf changes"
+ 
+ else
+   echo " - GDM is not installed. Skipping 1.8.2 configuration."
+ fi
+ 
+ # =====================[ SECTION 1.8.3: Disable GDM User List ]=====================
+ start_section "1.8.3"
+ 
+ GDM_PROFILE="gdm"
+ GDM_DB_DIR="/etc/dconf/db/${GDM_PROFILE}.d"
+ GDM_PROFILE_FILE="/etc/dconf/profile/${GDM_PROFILE}"
+ GDM_KEYFILE="${GDM_DB_DIR}/00-login-screen"
+ 
+ # Ensure profile file exists
+ run_command "mkdir -p /etc/dconf/profile" "1.8.3.1 Ensure dconf profile directory exists"
+ run_command "echo -e 'user-db:user\nsystem-db:${GDM_PROFILE}\nfile-db:/usr/share/${GDM_PROFILE}/greeter-dconf-defaults' > ${GDM_PROFILE_FILE}" "1.8.3.2 Create GDM profile file"
+ 
+ # Ensure dconf database directory exists
+ run_command "mkdir -p ${GDM_DB_DIR}" "1.8.3.3 Create GDM dconf database directory"
+ 
+ # Write or update disable-user-list setting
+ if ! grep -Piq '^\h*disable-user-list\h*=\h*true\b' ${GDM_DB_DIR}/* 2>/dev/null; then
+   if ! grep -Piq '^\h*
+ 
+ \[org/gnome/login-screen\]
+ 
+ ' ${GDM_DB_DIR}/* 2>/dev/null; then
+     run_command "echo -e '[org/gnome/login-screen]\n# Do not show the user list\ndisable-user-list=true' > ${GDM_KEYFILE}" "1.8.3.4 Create GDM keyfile with disable-user-list"
+   else
+     TARGET_FILE=$(grep -Pil '^\h*
+ 
+ \[org/gnome/login-screen\]
+ 
+ ' ${GDM_DB_DIR}/* | head -n 1)
+     run_command "sed -ri '/^\s*
+ 
+ \[org\/gnome\/login-screen\]
+ 
+ / a\\# Do not show the user list\ndisable-user-list=true' ${TARGET_FILE}" "1.8.3.5 Append disable-user-list to existing keyfile"
+   fi
+ fi
+ 
+ # Apply changes
+ run_command "dconf update" "1.8.3.6 Apply dconf changes"
+ 
+ 
+ # =====================[ SECTION 1.8.4: GDM Screen Lock When Idle ]=====================
+ start_section "1.8.4"
+ 
+ # Define dconf database name and keyfile
+ DCONF_DB="local"
+ DCONF_PROFILE="/etc/dconf/profile/user"
+ DCONF_DB_DIR="/etc/dconf/db/${DCONF_DB}.d"
+ DCONF_KEYFILE="${DCONF_DB_DIR}/00-screensaver"
+ 
+ # Idle and lock delay values (in seconds)
+ IDLE_DELAY="900"  # Max 900 seconds
+ LOCK_DELAY="5"    # Max 5 seconds
+ 
+ # Ensure dconf profile includes the database
+ run_command "mkdir -p /etc/dconf/profile" "1.8.4.1 Ensure dconf profile directory exists"
+ if ! grep -q "system-db:${DCONF_DB}" "${DCONF_PROFILE}" 2>/dev/null; then
+   run_command "echo -e 'user-db:user\nsystem-db:${DCONF_DB}' >> ${DCONF_PROFILE}" "1.8.4.2 Add ${DCONF_DB} to dconf profile"
+ fi
+ 
+ # Ensure dconf database directory exists
+ run_command "mkdir -p ${DCONF_DB_DIR}" "1.8.4.3 Create dconf database directory"
+ 
+ # Write idle and lock delay settings
+ run_command "cat << EOF > ${DCONF_KEYFILE}
+ # Specify the dconf path
+ [org/gnome/desktop/session]
+ 
+ # Number of seconds of inactivity before the screen goes blank
+ idle-delay=uint32 ${IDLE_DELAY}
+ 
+ # Specify the dconf path
+ [org/gnome/desktop/screensaver]
+ 
+ # Number of seconds after the screen is blank before locking the screen
+ lock-delay=uint32 ${LOCK_DELAY}
+ EOF" "1.8.4.4 Write screensaver lock settings"
+ 
+ # Apply changes
+ run_command "dconf update" "1.8.4.5 Apply dconf changes"
+ 
+ # =====================[ SECTION 1.8.5: Lock GDM Screen Settings ]=====================
+ start_section "1.8.5"
+ 
+ # Check if GDM is installed
+ if rpm -q gdm &>/dev/null; then
+   run_command "echo 'GDM is installed, proceeding with lock enforcement'" "1.8.5.1 Verify GDM presence"
+ 
+   # Identify dconf database directories containing idle-delay and lock-delay
+   IDLE_DB=$(grep -Psril '^\h*idle-delay\h*=\h*uint32\h+\d+\b' /etc/dconf/db/*/ 2>/dev/null | awk -F'/' '{split($(NF-1),a,".");print a[1]}' | head -n 1)
+   LOCK_DB=$(grep -Psril '^\h*lock-delay\h*=\h*uint32\h+\d+\b' /etc/dconf/db/*/ 2>/dev/null | awk -F'/' '{split($(NF-1),a,".");print a[1]}' | head -n 1)
+ 
+   IDLE_DIR="/etc/dconf/db/${IDLE_DB}.d"
+   LOCK_DIR="/etc/dconf/db/${LOCK_DB}.d"
+ 
+   # Lock idle-delay setting
+   if [ -d "$IDLE_DIR" ]; then
+     LOCK_FILE="${IDLE_DIR}/locks/00-screensaver"
+     run_command "mkdir -p ${IDLE_DIR}/locks" "1.8.5.2 Ensure idle-delay lock directory exists"
+     if ! grep -q '/org/gnome/desktop/session/idle-delay' "$LOCK_FILE" 2>/dev/null; then
+       run_command "echo '/org/gnome/desktop/session/idle-delay' >> ${LOCK_FILE}" "1.8.5.3 Lock idle-delay setting"
+     fi
+   else
+     echo " - idle-delay is not set, cannot be locked. Apply 1.8.4 first."
+   fi
+ 
+   # Lock lock-delay setting
+   if [ -d "$LOCK_DIR" ]; then
+     LOCK_FILE2="${LOCK_DIR}/locks/00-screensaver"
+     run_command "mkdir -p ${LOCK_DIR}/locks" "1.8.5.4 Ensure lock-delay lock directory exists"
+     if ! grep -q '/org/gnome/desktop/screensaver/lock-delay' "$LOCK_FILE2" 2>/dev/null; then
+       run_command "echo '/org/gnome/desktop/screensaver/lock-delay' >> ${LOCK_FILE2}" "1.8.5.5 Lock lock-delay setting"
+     fi
+   else
+     echo " - lock-delay is not set, cannot be locked. Apply 1.8.4 first."
+   fi
+ 
+   # Apply changes
+   run_command "dconf update" "1.8.5.6 Apply dconf changes"
+ 
+ else
+   echo " - GDM is not installed. Skipping 1.8.5 configuration."
+ fi
+ 
+ # =====================[ SECTION 1.8.6: Disable GDM Automount ]=====================
+ start_section "1.8.6"
+ 
+ # Check if GDM is installed
+ if rpm -q gdm &>/dev/null; then
+   run_command "echo 'GDM is installed, proceeding with automount configuration'" "1.8.6.1 Verify GDM presence"
+ 
+   # Set dconf profile name
+   DCONF_PROFILE="local"
+   DCONF_PROFILE_FILE="/etc/dconf/profile/user"
+   DCONF_DB_DIR="/etc/dconf/db/${DCONF_PROFILE}.d"
+   DCONF_KEYFILE="${DCONF_DB_DIR}/00-media-automount"
+ 
+   # Ensure dconf profile includes the database
+   run_command "mkdir -p /etc/dconf/profile" "1.8.6.2 Ensure dconf profile directory exists"
+   if ! grep -q "system-db:${DCONF_PROFILE}" "${DCONF_PROFILE_FILE}" 2>/dev/null; then
+     run_command "echo -e '\nuser-db:user\nsystem-db:${DCONF_PROFILE}' >> ${DCONF_PROFILE_FILE}" "1.8.6.3 Add ${DCONF_PROFILE} to dconf profile"
+   fi
+ 
+   # Ensure dconf database directory exists
+   run_command "mkdir -p ${DCONF_DB_DIR}" "1.8.6.4 Create dconf database directory"
+ 
+   # Create or update automount settings
+   if ! grep -Pqs '^\h*automount\b' "${DCONF_KEYFILE}" 2>/dev/null || ! grep -Pqs '^\h*automount-open\b' "${DCONF_KEYFILE}" 2>/dev/null; then
+     run_command "echo '[org/gnome/desktop/media-handling]' > ${DCONF_KEYFILE}" "1.8.6.5 Create media-handling section"
+   fi
+ 
+   if ! grep -Pqs '^\h*automount\s*=\s*false\b' "${DCONF_KEYFILE}" 2>/dev/null; then
+     run_command "sed -ri '/^\s*
+ 
+ \[org\/gnome\/desktop\/media-handling\]
+ 
+ /a\\nautomount=false' ${DCONF_KEYFILE}" "1.8.6.6 Set automount=false"
+   fi
+ 
+   if ! grep -Pqs '^\h*automount-open\s*=\s*false\b' "${DCONF_KEYFILE}" 2>/dev/null; then
+     run_command "sed -ri '/^\s*
+ 
+ \[org\/gnome\/desktop\/media-handling\]
+ 
+ /a\\nautomount-open=false' ${DCONF_KEYFILE}" "1.8.6.7 Set automount-open=false"
+   fi
+ 
+   # Apply changes
+   run_command "dconf update" "1.8.6.8 Apply dconf changes"
+ 
+ else
+   echo " - GDM is not installed. Skipping 1.8.6 configuration."
+ fi
+ 
+ # =====================[ SECTION 1.8.7: Lock Automount Settings ]=====================
+ start_section "1.8.7"
+ 
+ # Check if GDM is installed
+ if rpm -q gdm &>/dev/null; then
+   run_command "echo 'GDM is installed, proceeding with automount lock enforcement'" "1.8.7.1 Verify GDM presence"
+ 
+   # Identify dconf database directories containing automount settings
+   AUTO_DB=$(grep -Psril '^\h*automount\b' /etc/dconf/db/*/ 2>/dev/null | awk -F'/' '{split($(NF-1),a,".");print a[1]}' | head -n 1)
+   OPEN_DB=$(grep -Psril '^\h*automount-open\b' /etc/dconf/db/*/ 2>/dev/null | awk -F'/' '{split($(NF-1),a,".");print a[1]}' | head -n 1)
+ 
+   AUTO_DIR="/etc/dconf/db/${AUTO_DB}.d"
+   OPEN_DIR="/etc/dconf/db/${OPEN_DB}.d"
+ 
+   # Lock automount setting
+   if [ -d "$AUTO_DIR" ]; then
+     LOCK_FILE="${AUTO_DIR}/locks/00-media-automount"
+     run_command "mkdir -p ${AUTO_DIR}/locks" "1.8.7.2 Ensure automount lock directory exists"
+     if ! grep -q '/org/gnome/desktop/media-handling/automount' "$LOCK_FILE" 2>/dev/null; then
+       run_command "echo '/org/gnome/desktop/media-handling/automount' >> ${LOCK_FILE}" "1.8.7.3 Lock automount setting"
+     fi
+   else
+     echo " - automount is not set, cannot be locked. Apply 1.8.6 first."
+   fi
+ 
+   # Lock automount-open setting
+   if [ -d "$OPEN_DIR" ]; then
+     LOCK_FILE2="${OPEN_DIR}/locks/00-media-automount"
+     run_command "mkdir -p ${OPEN_DIR}/locks" "1.8.7.4 Ensure automount-open lock directory exists"
+     if ! grep -q '/org/gnome/desktop/media-handling/automount-open' "$LOCK_FILE2" 2>/dev/null; then
+       run_command "echo '/org/gnome/desktop/media-handling/automount-open' >> ${LOCK_FILE2}" "1.8.7.5 Lock automount-open setting"
+     fi
+   else
+     echo " - automount-open is not set, cannot be locked. Apply 1.8.6 first."
+   fi
+ 
+   # Apply changes
+   run_command "dconf update" "1.8.7.6 Apply dconf changes"
+ 
+ else
+   echo " - GDM is not installed. Skipping 1.8.7 configuration."
+ fi
+ 
+ # =====================[ SECTION 1.8.8: Disable GDM Autorun ]=====================
+ start_section "1.8.8"
+ 
+ # Check if GDM is installed
+ if rpm -q gdm &>/dev/null; then
+   run_command "echo 'GDM is installed, proceeding with autorun-never configuration'" "1.8.8.1 Verify GDM presence"
+ 
+   # Set dconf profile name
+   DCONF_PROFILE="local"
+   DCONF_PROFILE_FILE="/etc/dconf/profile/user"
+   DCONF_DB_DIR="/etc/dconf/db/${DCONF_PROFILE}.d"
+   DCONF_KEYFILE="${DCONF_DB_DIR}/00-media-autorun"
+ 
+   # Ensure dconf profile includes the database
+   run_command "mkdir -p /etc/dconf/profile" "1.8.8.2 Ensure dconf profile directory exists"
+   if ! grep -q "system-db:${DCONF_PROFILE}" "${DCONF_PROFILE_FILE}" 2>/dev/null; then
+     run_command "echo -e '\nuser-db:user\nsystem-db:${DCONF_PROFILE}' >> ${DCONF_PROFILE_FILE}" "1.8.8.3 Add ${DCONF_PROFILE} to dconf profile"
+   fi
+ 
+   # Ensure dconf database directory exists
+   run_command "mkdir -p ${DCONF_DB_DIR}" "1.8.8.4 Create dconf database directory"
+ 
+   # Create or update autorun-never setting
+   if ! grep -Pqs '^\h*autorun-never\s*=\s*true\b' "${DCONF_KEYFILE}" 2>/dev/null; then
+     if ! grep -Pqs '^\h*
+ 
+ \[org/gnome/desktop/media-handling\]
+ 
+ ' "${DCONF_KEYFILE}" 2>/dev/null; then
+       run_command "echo '[org/gnome/desktop/media-handling]' > ${DCONF_KEYFILE}" "1.8.8.5 Create media-handling section"
+     fi
+     run_command "sed -ri '/^\s*
+ 
+ \[org\/gnome\/desktop\/media-handling\]
+ 
+ /a\\nautorun-never=true' ${DCONF_KEYFILE}" "1.8.8.6 Set autorun-never=true"
+   else
+     run_command "echo 'autorun-never is already set to true'" "1.8.8.7 Confirm autorun-never setting"
+   fi
+ 
+   # Apply changes
+   run_command "dconf update" "1.8.8.8 Apply dconf changes"
+ 
+ else
+   echo " - GDM is not installed. Skipping 1.8.8 configuration."
+ fi
+ 
+ # =====================[ SECTION 1.8.9: Lock autorun-never Setting ]=====================
+ start_section "1.8.9"
+ 
+ # Check if GDM is installed
+ if rpm -q gdm &>/dev/null; then
+   run_command "echo 'GDM is installed, proceeding with autorun-never lock enforcement'" "1.8.9.1 Verify GDM presence"
+ 
+   # Identify dconf database directory containing autorun-never
+   AUTO_DB=$(grep -Psril '^\h*autorun-never\b' /etc/dconf/db/*/ 2>/dev/null | awk -F'/' '{split($(NF-1),a,".");print a[1]}' | head -n 1)
+   AUTO_DIR="/etc/dconf/db/${AUTO_DB}.d"
+ 
+   # Lock autorun-never setting
+   if [ -d "$AUTO_DIR" ]; then
+     LOCK_FILE="${AUTO_DIR}/locks/00-media-autorun"
+     run_command "mkdir -p ${AUTO_DIR}/locks" "1.8.9.2 Ensure autorun-never lock directory exists"
+     if ! grep -q '/org/gnome/desktop/media-handling/autorun-never' "$LOCK_FILE" 2>/dev/null; then
+       run_command "echo '/org/gnome/desktop/media-handling/autorun-never' >> ${LOCK_FILE}" "1.8.9.3 Lock autorun-never setting"
+     else
+       run_command "echo 'autorun-never is already locked'" "1.8.9.4 Confirm autorun-never lock"
+     fi
+   else
+     echo " - autorun-never is not set, cannot be locked. Apply 1.8.8 first."
+   fi
+ 
+   # Apply changes
+   run_command "dconf update" "1.8.9.5 Apply dconf changes"
+ 
+ else
+   echo " - GDM is not installed. Skipping 1.8.9 configuration."
+ fi
+ 
+ # =====================[ SECTION 1.8.10: Disable XDMCP ]=====================
+ start_section "1.8.10"
+ 
+ GDM_CONF="/etc/gdm/custom.conf"
+ 
+ # Remove 'Enable=true' from XDMCP section
+ if grep -Pq '^\s*Enable\s*=\s*true\b' "$GDM_CONF"; then
+   run_command "sed -ri '/^\s*Enable\s*=\s*true\b/d' ${GDM_CONF}" "1.8.10.1 Remove Enable=true from custom.conf"
+ else
+   run_command "echo 'XDMCP is not enabled in ${GDM_CONF}'" "1.8.10.2 Confirm XDMCP already disabled"
+ fi
 fi
 
-# Apply changes
-run_command "dconf update" "1.8.3.6 Apply dconf changes"
-
-
-# =====================[ SECTION 1.8.4: GDM Screen Lock When Idle ]=====================
-start_section "1.8.4"
-
-# Define dconf database name and keyfile
-DCONF_DB="local"
-DCONF_PROFILE="/etc/dconf/profile/user"
-DCONF_DB_DIR="/etc/dconf/db/${DCONF_DB}.d"
-DCONF_KEYFILE="${DCONF_DB_DIR}/00-screensaver"
-
-# Idle and lock delay values (in seconds)
-IDLE_DELAY="900"  # Max 900 seconds
-LOCK_DELAY="5"    # Max 5 seconds
-
-# Ensure dconf profile includes the database
-run_command "mkdir -p /etc/dconf/profile" "1.8.4.1 Ensure dconf profile directory exists"
-if ! grep -q "system-db:${DCONF_DB}" "${DCONF_PROFILE}" 2>/dev/null; then
-  run_command "echo -e 'user-db:user\nsystem-db:${DCONF_DB}' >> ${DCONF_PROFILE}" "1.8.4.2 Add ${DCONF_DB} to dconf profile"
+########################################################################################
+if [[ -z "$TARGET_SECTION" || "$TARGET_SECTION" == "1.9" ]]; then
+ # =====================[ SECTION 1.9: Remove All Graphical Tools (Optional) ]=====================
+ start_section "1.9"
+ 
+ # Set system to non-graphical mode
+ run_command "systemctl set-default multi-user.target" "1.9.1 Set default to non-graphical target"
+ run_command "systemctl mask graphical.target" "1.9.2 Mask graphical.target"
+ 
+ # Remove desktop environments
+ GUI_ENVIRONMENTS=(
+   gnome-shell
+   gnome-session
+   kde-workspace
+   xfce*
+   lxqt*
+ )
+ 
+ # Remove display managers
+ DISPLAY_MANAGERS=(
+   gdm
+   lightdm
+   sddm
+ )
+ 
+ # Remove GUI utilities
+ GUI_UTILITIES=(
+   gnome-terminal
+   gnome-control-center
+   gnome-system-monitor
+   gnome-disk-utility
+   gnome-calculator
+   gnome-font-viewer
+   gnome-screenshot
+   nautilus
+   konsole
+   dolphin
+   kate
+ )
+ 
+ # Remove graphical libraries and frameworks
+ GRAPHICAL_LIBS=(
+   xorg-x11-server-Xorg
+   xorg-x11-utils
+   xorg-x11-xinit
+   xorg-x11-fonts*
+   xorg-x11-drivers*
+   mesa*
+   gtk*
+   qt*
+ )
+ 
+ # Remove graphical applications
+ GRAPHICAL_APPS=(
+   firefox
+   libreoffice*
+   eog
+   evince
+ )
+ 
+ # Combine all packages
+ ALL_GUI_PACKAGES=(
+   "${GUI_ENVIRONMENTS[@]}"
+   "${DISPLAY_MANAGERS[@]}"
+   "${GUI_UTILITIES[@]}"
+   "${GRAPHICAL_LIBS[@]}"
+   "${GRAPHICAL_APPS[@]}"
+ )
+ 
+ # Remove each package
+ for pkg in "${ALL_GUI_PACKAGES[@]}"; do
+   run_command "dnf remove -y ${pkg}" "1.9 Remove package: ${pkg}"
+ done
+ 
+ # Optional: clean up orphaned dependencies
+ run_command "dnf autoremove -y" "1.9.3 Remove orphaned dependencies"
+ 
+ # Optional: verify graphical targets are disabled
+ run_command "systemctl list-unit-files | grep graphical.target" "1.9.4 Verify graphical target status"
 fi
 
-# Ensure dconf database directory exists
-run_command "mkdir -p ${DCONF_DB_DIR}" "1.8.4.3 Create dconf database directory"
-
-# Write idle and lock delay settings
-run_command "cat << EOF > ${DCONF_KEYFILE}
-# Specify the dconf path
-[org/gnome/desktop/session]
-
-# Number of seconds of inactivity before the screen goes blank
-idle-delay=uint32 ${IDLE_DELAY}
-
-# Specify the dconf path
-[org/gnome/desktop/screensaver]
-
-# Number of seconds after the screen is blank before locking the screen
-lock-delay=uint32 ${LOCK_DELAY}
-EOF" "1.8.4.4 Write screensaver lock settings"
-
-# Apply changes
-run_command "dconf update" "1.8.4.5 Apply dconf changes"
-
-# =====================[ SECTION 1.8.5: Lock GDM Screen Settings ]=====================
-start_section "1.8.5"
-
-# Check if GDM is installed
-if rpm -q gdm &>/dev/null; then
-  run_command "echo 'GDM is installed, proceeding with lock enforcement'" "1.8.5.1 Verify GDM presence"
-
-  # Identify dconf database directories containing idle-delay and lock-delay
-  IDLE_DB=$(grep -Psril '^\h*idle-delay\h*=\h*uint32\h+\d+\b' /etc/dconf/db/*/ 2>/dev/null | awk -F'/' '{split($(NF-1),a,".");print a[1]}' | head -n 1)
-  LOCK_DB=$(grep -Psril '^\h*lock-delay\h*=\h*uint32\h+\d+\b' /etc/dconf/db/*/ 2>/dev/null | awk -F'/' '{split($(NF-1),a,".");print a[1]}' | head -n 1)
-
-  IDLE_DIR="/etc/dconf/db/${IDLE_DB}.d"
-  LOCK_DIR="/etc/dconf/db/${LOCK_DB}.d"
-
-  # Lock idle-delay setting
-  if [ -d "$IDLE_DIR" ]; then
-    LOCK_FILE="${IDLE_DIR}/locks/00-screensaver"
-    run_command "mkdir -p ${IDLE_DIR}/locks" "1.8.5.2 Ensure idle-delay lock directory exists"
-    if ! grep -q '/org/gnome/desktop/session/idle-delay' "$LOCK_FILE" 2>/dev/null; then
-      run_command "echo '/org/gnome/desktop/session/idle-delay' >> ${LOCK_FILE}" "1.8.5.3 Lock idle-delay setting"
-    fi
-  else
-    echo " - idle-delay is not set, cannot be locked. Apply 1.8.4 first."
-  fi
-
-  # Lock lock-delay setting
-  if [ -d "$LOCK_DIR" ]; then
-    LOCK_FILE2="${LOCK_DIR}/locks/00-screensaver"
-    run_command "mkdir -p ${LOCK_DIR}/locks" "1.8.5.4 Ensure lock-delay lock directory exists"
-    if ! grep -q '/org/gnome/desktop/screensaver/lock-delay' "$LOCK_FILE2" 2>/dev/null; then
-      run_command "echo '/org/gnome/desktop/screensaver/lock-delay' >> ${LOCK_FILE2}" "1.8.5.5 Lock lock-delay setting"
-    fi
-  else
-    echo " - lock-delay is not set, cannot be locked. Apply 1.8.4 first."
-  fi
-
-  # Apply changes
-  run_command "dconf update" "1.8.5.6 Apply dconf changes"
-
-else
-  echo " - GDM is not installed. Skipping 1.8.5 configuration."
+########################################################################################
+if [[ -z "$TARGET_SECTION" || "$TARGET_SECTION" == "2.1" ]]; then
+ # =====================[ SECTION 2.1: Disable Unused Services ]=====================
+ start_section "2.1"
+ 
+ # List of services to disable/remove
+ SERVICES=(
+   autofs avahi dhcpd named dnsmasq smb vsftpd dovecot nfs-server ypserv cups rpcbind rsyncd snmpd telnet.socket
+   tftp.socket squid httpd xinetd xorg postfix
+ )
+ 
+ for svc in "${SERVICES[@]}"; do
+   if systemctl is-enabled "$svc" &>/dev/null || systemctl is-active "$svc" &>/dev/null; then
+     run_command "systemctl stop $svc" "2.1 Stop service: $svc"
+     run_command "systemctl disable $svc" "2.1 Disable service: $svc"
+     run_command "systemctl mask $svc" "2.1 Mask service: $svc"
+   fi
+ done
+ 
+ # List of packages to remove (if not required)
+ PACKAGES=(
+   autofs avahi dhcp-server bind dnsmasq samba vsftpd dovecot nfs-utils ypserv cups rpcbind rsync snmp telnet-server
+   tftp-server squid httpd xorg-x11-server-Xorg postfix
+ )
+ 
+ for pkg in "${PACKAGES[@]}"; do
+   if rpm -q "$pkg" &>/dev/null; then
+     run_command "dnf remove -y $pkg" "2.1 Remove package: $pkg"
+   fi
+ done
+ 
+ # =====================[ SECTION 2.1.21: Configure Postfix for Local-Only ]=====================
+ start_section "2.1.21"
+ 
+ POSTFIX_CONF="/etc/postfix/main.cf"
+ 
+ # Set inet_interfaces to loopback-only
+ if grep -q '^inet_interfaces' "$POSTFIX_CONF"; then
+   run_command "sed -ri 's/^inet_interfaces\s*=.*/inet_interfaces = loopback-only/' ${POSTFIX_CONF}" "2.1.21 Update inet_interfaces to loopback-only"
+ else
+   run_command "echo 'inet_interfaces = loopback-only' >> ${POSTFIX_CONF}" "2.1.21 Add inet_interfaces to main.cf"
+ fi
+ 
+ # Restart postfix to apply changes
+ run_command "systemctl restart postfix" "2.1.21 Restart postfix"
+ 
+ #### =====================[ SECTION 2.1.22: Restrict Network Listening Services ]=====================
+ ###start_section "2.1.22"
+ ###
+ #### Replace with actual service and package names
+ ###SERVICE_NAME="example"
+ ###PACKAGE_NAME="example-package"
+ ###
+ #### Stop and remove service if not required
+ ###run_command "systemctl stop ${SERVICE_NAME}.socket ${SERVICE_NAME}.service" "2.1.22 Stop ${SERVICE_NAME}"
+ ###run_command "dnf remove -y ${PACKAGE_NAME}" "2.1.22 Remove ${PACKAGE_NAME}"
+ ###
+ #### If package is required, mask the service instead
+ ###run_command "systemctl mask ${SERVICE_NAME}.socket ${SERVICE_NAME}.service" "2.1.22 Mask ${SERVICE_NAME} if required"
 fi
 
-# =====================[ SECTION 1.8.6: Disable GDM Automount ]=====================
-start_section "1.8.6"
+########################################################################################
+if [[ -z "$TARGET_SECTION" || "$TARGET_SECTION" == "2.2" ]]; then
+ # =====================[ SECTION 2.2: Remove Unused Client Tools ]=====================
+ start_section "2.2"
+ 
+ # List of client packages to remove
+ CLIENT_PACKAGES=(
+   ftp
+   openldap-clients
+   ypbind
+   telnet
+   tftp
+ )
+ 
+ for pkg in "${CLIENT_PACKAGES[@]}"; do
+   if rpm -q "$pkg" &>/dev/null; then
+     run_command "dnf remove -y $pkg" "2.2 Remove client package: $pkg"
+   else
+     run_command "echo '$pkg is not installed'" "2.2 Confirm absence of: $pkg"
+   fi
+ done
+fi 
 
-# Check if GDM is installed
-if rpm -q gdm &>/dev/null; then
-  run_command "echo 'GDM is installed, proceeding with automount configuration'" "1.8.6.1 Verify GDM presence"
-
-  # Set dconf profile name
-  DCONF_PROFILE="local"
-  DCONF_PROFILE_FILE="/etc/dconf/profile/user"
-  DCONF_DB_DIR="/etc/dconf/db/${DCONF_PROFILE}.d"
-  DCONF_KEYFILE="${DCONF_DB_DIR}/00-media-automount"
-
-  # Ensure dconf profile includes the database
-  run_command "mkdir -p /etc/dconf/profile" "1.8.6.2 Ensure dconf profile directory exists"
-  if ! grep -q "system-db:${DCONF_PROFILE}" "${DCONF_PROFILE_FILE}" 2>/dev/null; then
-    run_command "echo -e '\nuser-db:user\nsystem-db:${DCONF_PROFILE}' >> ${DCONF_PROFILE_FILE}" "1.8.6.3 Add ${DCONF_PROFILE} to dconf profile"
-  fi
-
-  # Ensure dconf database directory exists
-  run_command "mkdir -p ${DCONF_DB_DIR}" "1.8.6.4 Create dconf database directory"
-
-  # Create or update automount settings
-  if ! grep -Pqs '^\h*automount\b' "${DCONF_KEYFILE}" 2>/dev/null || ! grep -Pqs '^\h*automount-open\b' "${DCONF_KEYFILE}" 2>/dev/null; then
-    run_command "echo '[org/gnome/desktop/media-handling]' > ${DCONF_KEYFILE}" "1.8.6.5 Create media-handling section"
-  fi
-
-  if ! grep -Pqs '^\h*automount\s*=\s*false\b' "${DCONF_KEYFILE}" 2>/dev/null; then
-    run_command "sed -ri '/^\s*
-
-\[org\/gnome\/desktop\/media-handling\]
-
-/a\\nautomount=false' ${DCONF_KEYFILE}" "1.8.6.6 Set automount=false"
-  fi
-
-  if ! grep -Pqs '^\h*automount-open\s*=\s*false\b' "${DCONF_KEYFILE}" 2>/dev/null; then
-    run_command "sed -ri '/^\s*
-
-\[org\/gnome\/desktop\/media-handling\]
-
-/a\\nautomount-open=false' ${DCONF_KEYFILE}" "1.8.6.7 Set automount-open=false"
-  fi
-
-  # Apply changes
-  run_command "dconf update" "1.8.6.8 Apply dconf changes"
-
-else
-  echo " - GDM is not installed. Skipping 1.8.6 configuration."
+########################################################################################
+if [[ -z "$TARGET_SECTION" || "$TARGET_SECTION" == "2.3" ]]; then
+ # =====================[ SECTION 2.3: Time Synchronization ]=====================
+ start_section "2.3"
+ 
+ # 2.3.1 Ensure chrony is installed and enabled
+ if ! rpm -q chrony &>/dev/null; then
+   run_command "dnf install -y chrony" "2.3.1 Install chrony"
+ fi
+ run_command "systemctl enable chronyd" "2.3.1 Enable chronyd"
+ run_command "systemctl start chronyd" "2.3.1 Start chronyd"
+ 
+ # Set system timezone to Asia/Tehran
+ run_command "timedatectl set-timezone Asia/Tehran" "2.3.1 Set timezone to Asia/Tehran"
+ 
+ # 2.3.2 Ensure chrony is configured
+ CHRONY_CONF="/etc/chrony.conf"
+ CHRONY_DIR="/etc/chrony.d"
+ CHRONY_POOL="pool asia.pool.ntp.org iburst"
+ 
+ if ! grep -qE '^server|^pool' "$CHRONY_CONF"; then
+   run_command "echo '${CHRONY_POOL}' >> ${CHRONY_CONF}" "2.3.2 Add NTP pool to chrony.conf"
+ fi
+ 
+ # Optional: add additional pool config file
+ if [ -d "$CHRONY_DIR" ]; then
+   run_command "echo '${CHRONY_POOL}' > ${CHRONY_DIR}/ntp-pool.conf" "2.3.2 Create chrony.d pool config"
+ fi
+ 
+ # 2.3.3 Ensure chrony is not run as root
+ CHRONY_SYS="/etc/sysconfig/chronyd"
+ if grep -q '\-u root' "$CHRONY_SYS"; then
+   run_command "sed -ri 's/-u root//' ${CHRONY_SYS}" "2.3.3 Remove -u root from chronyd options"
+ fi
+ 
+ # Ensure OPTIONS line exists
+ if ! grep -q '^OPTIONS=' "$CHRONY_SYS"; then
+   run_command "echo 'OPTIONS=\"-F 2\"' >> ${CHRONY_SYS}" "2.3.3 Add OPTIONS line to chronyd config"
+ fi
+ 
+ # Reload chronyd to apply changes
+ run_command "systemctl reload-or-restart chronyd" "2.3.3 Reload chronyd"
 fi
 
-# =====================[ SECTION 1.8.7: Lock Automount Settings ]=====================
-start_section "1.8.7"
-
-# Check if GDM is installed
-if rpm -q gdm &>/dev/null; then
-  run_command "echo 'GDM is installed, proceeding with automount lock enforcement'" "1.8.7.1 Verify GDM presence"
-
-  # Identify dconf database directories containing automount settings
-  AUTO_DB=$(grep -Psril '^\h*automount\b' /etc/dconf/db/*/ 2>/dev/null | awk -F'/' '{split($(NF-1),a,".");print a[1]}' | head -n 1)
-  OPEN_DB=$(grep -Psril '^\h*automount-open\b' /etc/dconf/db/*/ 2>/dev/null | awk -F'/' '{split($(NF-1),a,".");print a[1]}' | head -n 1)
-
-  AUTO_DIR="/etc/dconf/db/${AUTO_DB}.d"
-  OPEN_DIR="/etc/dconf/db/${OPEN_DB}.d"
-
-  # Lock automount setting
-  if [ -d "$AUTO_DIR" ]; then
-    LOCK_FILE="${AUTO_DIR}/locks/00-media-automount"
-    run_command "mkdir -p ${AUTO_DIR}/locks" "1.8.7.2 Ensure automount lock directory exists"
-    if ! grep -q '/org/gnome/desktop/media-handling/automount' "$LOCK_FILE" 2>/dev/null; then
-      run_command "echo '/org/gnome/desktop/media-handling/automount' >> ${LOCK_FILE}" "1.8.7.3 Lock automount setting"
-    fi
-  else
-    echo " - automount is not set, cannot be locked. Apply 1.8.6 first."
-  fi
-
-  # Lock automount-open setting
-  if [ -d "$OPEN_DIR" ]; then
-    LOCK_FILE2="${OPEN_DIR}/locks/00-media-automount"
-    run_command "mkdir -p ${OPEN_DIR}/locks" "1.8.7.4 Ensure automount-open lock directory exists"
-    if ! grep -q '/org/gnome/desktop/media-handling/automount-open' "$LOCK_FILE2" 2>/dev/null; then
-      run_command "echo '/org/gnome/desktop/media-handling/automount-open' >> ${LOCK_FILE2}" "1.8.7.5 Lock automount-open setting"
-    fi
-  else
-    echo " - automount-open is not set, cannot be locked. Apply 1.8.6 first."
-  fi
-
-  # Apply changes
-  run_command "dconf update" "1.8.7.6 Apply dconf changes"
-
-else
-  echo " - GDM is not installed. Skipping 1.8.7 configuration."
+########################################################################################
+if [[ -z "$TARGET_SECTION" || "$TARGET_SECTION" == "2.4" ]]; then
+ # =====================[ SECTION 2.4.1: Configure cron ]=====================
+ start_section "2.4.1"
+ 
+ # 2.4.1.1 Ensure cron daemon is enabled and active
+ CRON_SERVICE=$(systemctl list-unit-files | awk '$1~/^crond?\.service/{print $1}' | head -n 1)
+ if [ -n "$CRON_SERVICE" ]; then
+   run_command "systemctl unmask $CRON_SERVICE" "2.4.1.1 Unmask $CRON_SERVICE"
+   run_command "systemctl --now enable $CRON_SERVICE" "2.4.1.1 Enable and start $CRON_SERVICE"
+ fi
+ 
+ # 2.4.1.2–2.4.1.7 Ensure permissions on cron directories and files
+ CRON_PATHS=(
+   /etc/crontab
+   /etc/cron.hourly/
+   /etc/cron.daily/
+   /etc/cron.weekly/
+   /etc/cron.monthly/
+   /etc/cron.d/
+ )
+ 
+ for path in "${CRON_PATHS[@]}"; do
+   run_command "chown root:root $path" "2.4.1 Set owner of $path"
+   run_command "chmod og-rwx $path" "2.4.1 Set permissions of $path"
+ done
+ 
+ # 2.4.1.8 Restrict crontab to authorized users
+ CRON_ALLOW="/etc/cron.allow"
+ CRON_DENY="/etc/cron.deny"
+ 
+ if [ ! -e "$CRON_ALLOW" ]; then
+   run_command "touch $CRON_ALLOW" "2.4.1.8 Create cron.allow"
+ fi
+ run_command "chown root:root $CRON_ALLOW" "2.4.1.8 Set owner of cron.allow"
+ run_command "chmod 640 $CRON_ALLOW" "2.4.1.8 Set permissions of cron.allow"
+ 
+ if [ -e "$CRON_DENY" ]; then
+   run_command "chown root:root $CRON_DENY" "2.4.1.8 Set owner of cron.deny"
+   run_command "chmod 640 $CRON_DENY" "2.4.1.8 Set permissions of cron.deny"
+ fi
+ 
+ # =====================[ SECTION 2.4.2: Configure at ]=====================
+ start_section "2.4.2"
+ 
+ # Check if 'at' is installed
+ if rpm -q at &>/dev/null; then
+   run_command "echo 'at is installed, proceeding with configuration'" "2.4.2.1 Confirm at presence"
+ 
+   AT_ALLOW="/etc/at.allow"
+   AT_DENY="/etc/at.deny"
+   GROUP=$(grep -Pq '^daemon\b' /etc/group && echo "daemon" || echo "root")
+ 
+   # Create and secure /etc/at.allow
+   if [ ! -e "$AT_ALLOW" ]; then
+     run_command "touch $AT_ALLOW" "2.4.2.1 Create at.allow"
+   fi
+   run_command "chown root:$GROUP $AT_ALLOW" "2.4.2.1 Set owner of at.allow"
+   run_command "chmod 640 $AT_ALLOW" "2.4.2.1 Set permissions of at.allow"
+ 
+   # Secure /etc/at.deny if it exists
+   if [ -e "$AT_DENY" ]; then
+     run_command "chown root:$GROUP $AT_DENY" "2.4.2.1 Set owner of at.deny"
+     run_command "chmod 640 $AT_DENY" "2.4.2.1 Set permissions of at.deny"
+   fi
+ 
+   # Verification output
+   run_command "stat -Lc 'Access: (%a/%A) Owner: (%U) Group: (%G)' $AT_ALLOW" "2.4.2.1 Verify at.allow permissions"
+   run_command "[ -e \"$AT_DENY\" ] && stat -Lc 'Access: (%a/%A) Owner: (%U) Group: (%G)' $AT_DENY || echo 'at.deny does not exist'" "2.4.2.1 Verify at.deny status"
+ else
+   run_command "echo 'at is not installed. Skipping 2.4.2.1 configuration.'" "2.4.2.1 Confirm absence of at"
+ fi
 fi
-
-# =====================[ SECTION 1.8.8: Disable GDM Autorun ]=====================
-start_section "1.8.8"
-
-# Check if GDM is installed
-if rpm -q gdm &>/dev/null; then
-  run_command "echo 'GDM is installed, proceeding with autorun-never configuration'" "1.8.8.1 Verify GDM presence"
-
-  # Set dconf profile name
-  DCONF_PROFILE="local"
-  DCONF_PROFILE_FILE="/etc/dconf/profile/user"
-  DCONF_DB_DIR="/etc/dconf/db/${DCONF_PROFILE}.d"
-  DCONF_KEYFILE="${DCONF_DB_DIR}/00-media-autorun"
-
-  # Ensure dconf profile includes the database
-  run_command "mkdir -p /etc/dconf/profile" "1.8.8.2 Ensure dconf profile directory exists"
-  if ! grep -q "system-db:${DCONF_PROFILE}" "${DCONF_PROFILE_FILE}" 2>/dev/null; then
-    run_command "echo -e '\nuser-db:user\nsystem-db:${DCONF_PROFILE}' >> ${DCONF_PROFILE_FILE}" "1.8.8.3 Add ${DCONF_PROFILE} to dconf profile"
-  fi
-
-  # Ensure dconf database directory exists
-  run_command "mkdir -p ${DCONF_DB_DIR}" "1.8.8.4 Create dconf database directory"
-
-  # Create or update autorun-never setting
-  if ! grep -Pqs '^\h*autorun-never\s*=\s*true\b' "${DCONF_KEYFILE}" 2>/dev/null; then
-    if ! grep -Pqs '^\h*
-
-\[org/gnome/desktop/media-handling\]
-
-' "${DCONF_KEYFILE}" 2>/dev/null; then
-      run_command "echo '[org/gnome/desktop/media-handling]' > ${DCONF_KEYFILE}" "1.8.8.5 Create media-handling section"
-    fi
-    run_command "sed -ri '/^\s*
-
-\[org\/gnome\/desktop\/media-handling\]
-
-/a\\nautorun-never=true' ${DCONF_KEYFILE}" "1.8.8.6 Set autorun-never=true"
-  else
-    run_command "echo 'autorun-never is already set to true'" "1.8.8.7 Confirm autorun-never setting"
-  fi
-
-  # Apply changes
-  run_command "dconf update" "1.8.8.8 Apply dconf changes"
-
-else
-  echo " - GDM is not installed. Skipping 1.8.8 configuration."
-fi
-
-# =====================[ SECTION 1.8.9: Lock autorun-never Setting ]=====================
-start_section "1.8.9"
-
-# Check if GDM is installed
-if rpm -q gdm &>/dev/null; then
-  run_command "echo 'GDM is installed, proceeding with autorun-never lock enforcement'" "1.8.9.1 Verify GDM presence"
-
-  # Identify dconf database directory containing autorun-never
-  AUTO_DB=$(grep -Psril '^\h*autorun-never\b' /etc/dconf/db/*/ 2>/dev/null | awk -F'/' '{split($(NF-1),a,".");print a[1]}' | head -n 1)
-  AUTO_DIR="/etc/dconf/db/${AUTO_DB}.d"
-
-  # Lock autorun-never setting
-  if [ -d "$AUTO_DIR" ]; then
-    LOCK_FILE="${AUTO_DIR}/locks/00-media-autorun"
-    run_command "mkdir -p ${AUTO_DIR}/locks" "1.8.9.2 Ensure autorun-never lock directory exists"
-    if ! grep -q '/org/gnome/desktop/media-handling/autorun-never' "$LOCK_FILE" 2>/dev/null; then
-      run_command "echo '/org/gnome/desktop/media-handling/autorun-never' >> ${LOCK_FILE}" "1.8.9.3 Lock autorun-never setting"
-    else
-      run_command "echo 'autorun-never is already locked'" "1.8.9.4 Confirm autorun-never lock"
-    fi
-  else
-    echo " - autorun-never is not set, cannot be locked. Apply 1.8.8 first."
-  fi
-
-  # Apply changes
-  run_command "dconf update" "1.8.9.5 Apply dconf changes"
-
-else
-  echo " - GDM is not installed. Skipping 1.8.9 configuration."
-fi
-
-# =====================[ SECTION 1.8.10: Disable XDMCP ]=====================
-start_section "1.8.10"
-
-GDM_CONF="/etc/gdm/custom.conf"
-
-# Remove 'Enable=true' from XDMCP section
-if grep -Pq '^\s*Enable\s*=\s*true\b' "$GDM_CONF"; then
-  run_command "sed -ri '/^\s*Enable\s*=\s*true\b/d' ${GDM_CONF}" "1.8.10.1 Remove Enable=true from custom.conf"
-else
-  run_command "echo 'XDMCP is not enabled in ${GDM_CONF}'" "1.8.10.2 Confirm XDMCP already disabled"
-fi
-# =====================[ SECTION 1.9: Remove All Graphical Tools (Optional) ]=====================
-start_section "1.9"
-
-# Set system to non-graphical mode
-run_command "systemctl set-default multi-user.target" "1.9.1 Set default to non-graphical target"
-run_command "systemctl mask graphical.target" "1.9.2 Mask graphical.target"
-
-# Remove desktop environments
-GUI_ENVIRONMENTS=(
-  gnome-shell
-  gnome-session
-  kde-workspace
-  xfce*
-  lxqt*
-)
-
-# Remove display managers
-DISPLAY_MANAGERS=(
-  gdm
-  lightdm
-  sddm
-)
-
-# Remove GUI utilities
-GUI_UTILITIES=(
-  gnome-terminal
-  gnome-control-center
-  gnome-system-monitor
-  gnome-disk-utility
-  gnome-calculator
-  gnome-font-viewer
-  gnome-screenshot
-  nautilus
-  konsole
-  dolphin
-  kate
-)
-
-# Remove graphical libraries and frameworks
-GRAPHICAL_LIBS=(
-  xorg-x11-server-Xorg
-  xorg-x11-utils
-  xorg-x11-xinit
-  xorg-x11-fonts*
-  xorg-x11-drivers*
-  mesa*
-  gtk*
-  qt*
-)
-
-# Remove graphical applications
-GRAPHICAL_APPS=(
-  firefox
-  libreoffice*
-  eog
-  evince
-)
-
-# Combine all packages
-ALL_GUI_PACKAGES=(
-  "${GUI_ENVIRONMENTS[@]}"
-  "${DISPLAY_MANAGERS[@]}"
-  "${GUI_UTILITIES[@]}"
-  "${GRAPHICAL_LIBS[@]}"
-  "${GRAPHICAL_APPS[@]}"
-)
-
-# Remove each package
-for pkg in "${ALL_GUI_PACKAGES[@]}"; do
-  run_command "dnf remove -y ${pkg}" "1.9 Remove package: ${pkg}"
-done
-
-# Optional: clean up orphaned dependencies
-run_command "dnf autoremove -y" "1.9.3 Remove orphaned dependencies"
-
-# Optional: verify graphical targets are disabled
-run_command "systemctl list-unit-files | grep graphical.target" "1.9.4 Verify graphical target status"
-
-# =====================[ SECTION 2.1: Disable Unused Services ]=====================
-start_section "2.1"
-
-# List of services to disable/remove
-SERVICES=(
-  autofs avahi dhcpd named dnsmasq smb vsftpd dovecot nfs-server ypserv cups rpcbind rsyncd snmpd telnet.socket
-  tftp.socket squid httpd xinetd xorg postfix
-)
-
-for svc in "${SERVICES[@]}"; do
-  if systemctl is-enabled "$svc" &>/dev/null || systemctl is-active "$svc" &>/dev/null; then
-    run_command "systemctl stop $svc" "2.1 Stop service: $svc"
-    run_command "systemctl disable $svc" "2.1 Disable service: $svc"
-    run_command "systemctl mask $svc" "2.1 Mask service: $svc"
-  fi
-done
-
-# List of packages to remove (if not required)
-PACKAGES=(
-  autofs avahi dhcp-server bind dnsmasq samba vsftpd dovecot nfs-utils ypserv cups rpcbind rsync snmp telnet-server
-  tftp-server squid httpd xorg-x11-server-Xorg postfix
-)
-
-for pkg in "${PACKAGES[@]}"; do
-  if rpm -q "$pkg" &>/dev/null; then
-    run_command "dnf remove -y $pkg" "2.1 Remove package: $pkg"
-  fi
-done
-
-# =====================[ SECTION 2.1.21: Configure Postfix for Local-Only ]=====================
-start_section "2.1.21"
-
-POSTFIX_CONF="/etc/postfix/main.cf"
-
-# Set inet_interfaces to loopback-only
-if grep -q '^inet_interfaces' "$POSTFIX_CONF"; then
-  run_command "sed -ri 's/^inet_interfaces\s*=.*/inet_interfaces = loopback-only/' ${POSTFIX_CONF}" "2.1.21 Update inet_interfaces to loopback-only"
-else
-  run_command "echo 'inet_interfaces = loopback-only' >> ${POSTFIX_CONF}" "2.1.21 Add inet_interfaces to main.cf"
-fi
-
-# Restart postfix to apply changes
-run_command "systemctl restart postfix" "2.1.21 Restart postfix"
-
-#### =====================[ SECTION 2.1.22: Restrict Network Listening Services ]=====================
-###start_section "2.1.22"
-###
-#### Replace with actual service and package names
-###SERVICE_NAME="example"
-###PACKAGE_NAME="example-package"
-###
-#### Stop and remove service if not required
-###run_command "systemctl stop ${SERVICE_NAME}.socket ${SERVICE_NAME}.service" "2.1.22 Stop ${SERVICE_NAME}"
-###run_command "dnf remove -y ${PACKAGE_NAME}" "2.1.22 Remove ${PACKAGE_NAME}"
-###
-#### If package is required, mask the service instead
-###run_command "systemctl mask ${SERVICE_NAME}.socket ${SERVICE_NAME}.service" "2.1.22 Mask ${SERVICE_NAME} if required"
-
-# =====================[ SECTION 2.2: Remove Unused Client Tools ]=====================
-start_section "2.2"
-
-# List of client packages to remove
-CLIENT_PACKAGES=(
-  ftp
-  openldap-clients
-  ypbind
-  telnet
-  tftp
-)
-
-for pkg in "${CLIENT_PACKAGES[@]}"; do
-  if rpm -q "$pkg" &>/dev/null; then
-    run_command "dnf remove -y $pkg" "2.2 Remove client package: $pkg"
-  else
-    run_command "echo '$pkg is not installed'" "2.2 Confirm absence of: $pkg"
-  fi
-done
-
-# =====================[ SECTION 2.3: Time Synchronization ]=====================
-start_section "2.3"
-
-# 2.3.1 Ensure chrony is installed and enabled
-if ! rpm -q chrony &>/dev/null; then
-  run_command "dnf install -y chrony" "2.3.1 Install chrony"
-fi
-run_command "systemctl enable chronyd" "2.3.1 Enable chronyd"
-run_command "systemctl start chronyd" "2.3.1 Start chronyd"
-
-# Set system timezone to Asia/Tehran
-run_command "timedatectl set-timezone Asia/Tehran" "2.3.1 Set timezone to Asia/Tehran"
-
-# 2.3.2 Ensure chrony is configured
-CHRONY_CONF="/etc/chrony.conf"
-CHRONY_DIR="/etc/chrony.d"
-CHRONY_POOL="pool asia.pool.ntp.org iburst"
-
-if ! grep -qE '^server|^pool' "$CHRONY_CONF"; then
-  run_command "echo '${CHRONY_POOL}' >> ${CHRONY_CONF}" "2.3.2 Add NTP pool to chrony.conf"
-fi
-
-# Optional: add additional pool config file
-if [ -d "$CHRONY_DIR" ]; then
-  run_command "echo '${CHRONY_POOL}' > ${CHRONY_DIR}/ntp-pool.conf" "2.3.2 Create chrony.d pool config"
-fi
-
-# 2.3.3 Ensure chrony is not run as root
-CHRONY_SYS="/etc/sysconfig/chronyd"
-if grep -q '\-u root' "$CHRONY_SYS"; then
-  run_command "sed -ri 's/-u root//' ${CHRONY_SYS}" "2.3.3 Remove -u root from chronyd options"
-fi
-
-# Ensure OPTIONS line exists
-if ! grep -q '^OPTIONS=' "$CHRONY_SYS"; then
-  run_command "echo 'OPTIONS=\"-F 2\"' >> ${CHRONY_SYS}" "2.3.3 Add OPTIONS line to chronyd config"
-fi
-
-# Reload chronyd to apply changes
-run_command "systemctl reload-or-restart chronyd" "2.3.3 Reload chronyd"
-
-# =====================[ SECTION 2.4.1: Configure cron ]=====================
-start_section "2.4.1"
-
-# 2.4.1.1 Ensure cron daemon is enabled and active
-CRON_SERVICE=$(systemctl list-unit-files | awk '$1~/^crond?\.service/{print $1}' | head -n 1)
-if [ -n "$CRON_SERVICE" ]; then
-  run_command "systemctl unmask $CRON_SERVICE" "2.4.1.1 Unmask $CRON_SERVICE"
-  run_command "systemctl --now enable $CRON_SERVICE" "2.4.1.1 Enable and start $CRON_SERVICE"
-fi
-
-# 2.4.1.2–2.4.1.7 Ensure permissions on cron directories and files
-CRON_PATHS=(
-  /etc/crontab
-  /etc/cron.hourly/
-  /etc/cron.daily/
-  /etc/cron.weekly/
-  /etc/cron.monthly/
-  /etc/cron.d/
-)
-
-for path in "${CRON_PATHS[@]}"; do
-  run_command "chown root:root $path" "2.4.1 Set owner of $path"
-  run_command "chmod og-rwx $path" "2.4.1 Set permissions of $path"
-done
-
-# 2.4.1.8 Restrict crontab to authorized users
-CRON_ALLOW="/etc/cron.allow"
-CRON_DENY="/etc/cron.deny"
-
-if [ ! -e "$CRON_ALLOW" ]; then
-  run_command "touch $CRON_ALLOW" "2.4.1.8 Create cron.allow"
-fi
-run_command "chown root:root $CRON_ALLOW" "2.4.1.8 Set owner of cron.allow"
-run_command "chmod 640 $CRON_ALLOW" "2.4.1.8 Set permissions of cron.allow"
-
-if [ -e "$CRON_DENY" ]; then
-  run_command "chown root:root $CRON_DENY" "2.4.1.8 Set owner of cron.deny"
-  run_command "chmod 640 $CRON_DENY" "2.4.1.8 Set permissions of cron.deny"
-fi
-
-# =====================[ SECTION 2.4.2: Configure at ]=====================
-start_section "2.4.2"
-
-# Check if 'at' is installed
-if rpm -q at &>/dev/null; then
-  run_command "echo 'at is installed, proceeding with configuration'" "2.4.2.1 Confirm at presence"
-
-  AT_ALLOW="/etc/at.allow"
-  AT_DENY="/etc/at.deny"
-  GROUP=$(grep -Pq '^daemon\b' /etc/group && echo "daemon" || echo "root")
-
-  # Create and secure /etc/at.allow
-  if [ ! -e "$AT_ALLOW" ]; then
-    run_command "touch $AT_ALLOW" "2.4.2.1 Create at.allow"
-  fi
-  run_command "chown root:$GROUP $AT_ALLOW" "2.4.2.1 Set owner of at.allow"
-  run_command "chmod 640 $AT_ALLOW" "2.4.2.1 Set permissions of at.allow"
-
-  # Secure /etc/at.deny if it exists
-  if [ -e "$AT_DENY" ]; then
-    run_command "chown root:$GROUP $AT_DENY" "2.4.2.1 Set owner of at.deny"
-    run_command "chmod 640 $AT_DENY" "2.4.2.1 Set permissions of at.deny"
-  fi
-
-  # Verification output
-  run_command "stat -Lc 'Access: (%a/%A) Owner: (%U) Group: (%G)' $AT_ALLOW" "2.4.2.1 Verify at.allow permissions"
-  run_command "[ -e \"$AT_DENY\" ] && stat -Lc 'Access: (%a/%A) Owner: (%U) Group: (%G)' $AT_DENY || echo 'at.deny does not exist'" "2.4.2.1 Verify at.deny status"
-else
-  run_command "echo 'at is not installed. Skipping 2.4.2.1 configuration.'" "2.4.2.1 Confirm absence of at"
-fi
-
 
 
 # =====================[ END OF CIS ORACLE LINUX 9 HARDENING SCRIPT ]=====================
