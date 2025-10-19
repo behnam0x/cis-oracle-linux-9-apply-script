@@ -1396,6 +1396,231 @@ if [[ -z "$TARGET_SECTION" || "$TARGET_SECTION" == "3.3" ]]; then
  fi
 fi
 
+########################################################################################
+if [[ -z "$TARGET_SECTION" || "$TARGET_SECTION" == "4.1" ]]; then
+ # =====================[ SECTION 4.1.1: Ensure nftables Is Installed ]=====================
+ start_section "4.1.1"
+ 
+ # Check if nftables is installed
+ if ! rpm -q nftables &>/dev/null; then
+   run_command "dnf install -y nftables" "4.1.1 Install nftables package"
+ else
+   run_command "echo 'nftables is already installed'" "4.1.1 Confirm nftables package presence"
+ fi
+ 
+ # =====================[ SECTION 4.1.2: Ensure Single Firewall Utility Is In Use ]=====================
+ start_section "4.1.2"
+ 
+ # Initialize status variables
+ fwd_status="" nft_status="" fwutil_status=""
+ 
+ # Get FirewallD status
+ if rpm -q firewalld &>/dev/null; then
+   fwd_status="$(systemctl is-enabled firewalld.service 2>/dev/null):$(systemctl is-active firewalld.service 2>/dev/null)"
+ fi
+ 
+ # Get nftables status
+ if rpm -q nftables &>/dev/null; then
+   nft_status="$(systemctl is-enabled nftables.service 2>/dev/null):$(systemctl is-active nftables.service 2>/dev/null)"
+ fi
+ 
+ fwutil_status="${fwd_status}:${nft_status}"
+ 
+ case "$fwutil_status" in
+   enabled:active:masked:inactive|enabled:active:disabled:inactive)
+     run_command "echo 'FirewallD is active, NFTables is disabled — no remediation needed'" "4.1.2 Confirm FirewallD is sole active firewall"
+     ;;
+   masked:inactive:enabled:active|disabled:inactive:enabled:active)
+     run_command "echo 'NFTables is active, FirewallD is disabled — no remediation needed'" "4.1.2 Confirm NFTables is sole active firewall"
+     ;;
+   enabled:active:enabled:active)
+     run_command "systemctl stop nftables && systemctl --now mask nftables" "4.1.2 Stop and mask NFTables (FirewallD is active)"
+     ;;
+   enabled:*:enabled:*)
+     if [[ "$(awk -F: '{print $2}' <<< "$fwutil_status")" == "active" && "$(awk -F: '{print $4}' <<< "$fwutil_status")" == "inactive" ]]; then
+       run_command "systemctl stop nftables && systemctl --now mask nftables" "4.1.2 Mask NFTables (FirewallD is active)"
+     elif [[ "$(awk -F: '{print $4}' <<< "$fwutil_status")" == "active" && "$(awk -F: '{print $2}' <<< "$fwutil_status")" == "inactive" ]]; then
+       run_command "systemctl stop firewalld && systemctl --now mask firewalld" "4.1.2 Mask FirewallD (NFTables is active)"
+     fi
+     ;;
+   *:active:*:active)
+     if [[ "$(awk -F: '{print $1}' <<< "$fwutil_status")" == "enabled" && "$(awk -F: '{print $3}' <<< "$fwutil_status")" != "enabled" ]]; then
+       run_command "systemctl stop nftables && systemctl --now mask nftables" "4.1.2 Stop and mask NFTables (FirewallD is preferred)"
+     elif [[ "$(awk -F: '{print $3}' <<< "$fwutil_status")" == "enabled" && "$(awk -F: '{print $1}' <<< "$fwutil_status")" != "enabled" ]]; then
+       run_command "systemctl stop firewalld && systemctl --now mask firewalld" "4.1.2 Stop and mask FirewallD (NFTables is preferred)"
+     fi
+     ;;
+   :enabled:active)
+     run_command "echo 'NFTables is active, FirewallD not installed — no remediation needed'" "4.1.2 Confirm NFTables is sole active firewall"
+     ;;
+   :)
+     run_command "dnf install -y nftables" "4.1.2 Install NFTables (no firewall detected)"
+     ;;
+   *:*:)
+     run_command "dnf install -y nftables" "4.1.2 Install NFTables (FirewallD present, NFTables missing)"
+     ;;
+   *)
+     run_command "echo 'Unable to determine firewall state — manual remediation required'" "4.1.2 Manual remediation required"
+     ;;
+ esac
+fi
+
+########################################################################################
+if [[ -z "$TARGET_SECTION" || "$TARGET_SECTION" == "4.2" ]]; then
+ # =====================[ SECTION 4.2.1: Drop Unnecessary Services and Ports in Firewalld ]=====================
+ start_section "4.2.1"
+ 
+ # Check if Firewalld is active
+ if systemctl is-active --quiet firewalld; then
+   run_command "echo 'Firewalld is active — review and remove unnecessary services and ports manually'" "4.2.1 Manual review required"
+ 
+   # Example commands for manual execution
+   echo "To remove an unnecessary service:"
+   echo "  firewall-cmd --remove-service=<service>"
+   echo "Example:"
+   echo "  firewall-cmd --remove-service=cockpit"
+ 
+   echo "To remove an unnecessary port:"
+   echo "  firewall-cmd --remove-port=<port-number>/<protocol>"
+   echo "Example:"
+   echo "  firewall-cmd --remove-port=25/tcp"
+ 
+   echo "To persist changes:"
+   echo "  firewall-cmd --runtime-to-permanent"
+ else
+   run_command "echo 'Firewalld is not active — skipping manual remediation'" "4.2.1 Firewalld not in use"
+ fi
+ 
+ # =====================[ SECTION 4.2.2: Configure Firewalld Loopback Traffic ]=====================
+ start_section "4.2.2"
+ 
+ # Determine active firewall utility
+ if systemctl is-enabled firewalld.service &>/dev/null; then
+   run_command "echo 'FirewallD is enabled — configuring loopback rules'" "4.2.2 Firewalld in use"
+ 
+   # Ensure loopback interface is trusted
+   run_command "firewall-cmd --permanent --zone=trusted --add-interface=lo" "4.2.2 Add loopback interface to trusted zone"
+ 
+   # Drop IPv4 traffic from loopback source to non-loopback destination
+   run_command "firewall-cmd --permanent --add-rich-rule='rule family=ipv4 source address=\"127.0.0.1\" destination not address=\"127.0.0.1\" drop'" "4.2.2 Drop IPv4 loopback traffic to non-loopback"
+   run_command "firewall-cmd --permanent --zone=trusted --add-rich-rule='rule family=ipv4 source address=\"127.0.0.1\" destination not address=\"127.0.0.1\" drop'" "4.2.2 Drop IPv4 loopback traffic in trusted zone"
+ 
+   # Check if IPv6 is enabled
+   if [ "$(cat /sys/module/ipv6/parameters/disable)" = "0" ]; then
+     # Drop IPv6 traffic from loopback source to non-loopback destination
+     run_command "firewall-cmd --permanent --add-rich-rule='rule family=ipv6 source address=\"::1\" destination not address=\"::1\" drop'" "4.2.2 Drop IPv6 loopback traffic to non-loopback"
+     run_command "firewall-cmd --permanent --zone=trusted --add-rich-rule='rule family=ipv6 source address=\"::1\" destination not address=\"::1\" drop'" "4.2.2 Drop IPv6 loopback traffic in trusted zone"
+   else
+     run_command "echo 'IPv6 is disabled — skipping IPv6 loopback rules'" "4.2.2 IPv6 not applicable"
+   fi
+ 
+   # Reload firewalld to apply changes
+   run_command "firewall-cmd --reload" "4.2.2 Reload Firewalld to apply loopback rules"
+ 
+ elif systemctl is-enabled nftables.service &>/dev/null; then
+   run_command "echo 'NFTables is enabled — loopback rule recommendation is not applicable'" "4.2.2 NFTables in use"
+ else
+   run_command "echo 'No active firewall detected — manual remediation may be required'" "4.2.2 No firewall utility active"
+ fi
+fi
+
+########################################################################################
+if [[ -z "$TARGET_SECTION" || "$TARGET_SECTION" == "4.3" ]]; then
+ # =====================[ SECTION 4.3.1: Ensure nftables Base Chains Exist ]=====================
+ start_section "4.3.1"
+ 
+ # Check if nftables is enabled
+ if systemctl is-enabled nftables.service &>/dev/null; then
+   run_command "echo 'nftables is enabled — verifying base chains'" "4.3.1 nftables in use"
+ 
+   # Ensure 'filter' table exists
+   if ! nft list table inet filter &>/dev/null; then
+     run_command "nft add table inet filter" "4.3.1 Create inet filter table"
+   fi
+ 
+   # Create or add base chains
+   for chain in input forward output; do
+     if ! nft list chain inet filter "$chain" &>/dev/null; then
+       run_command "nft create chain inet filter $chain { type filter hook $chain priority 0 \; }" "4.3.1 Create base chain: $chain"
+     else
+       run_command "echo 'Chain $chain already exists — no action needed'" "4.3.1 Confirm base chain: $chain"
+     fi
+   done
+ else
+   run_command "echo 'nftables is not enabled — skipping base chain configuration'" "4.3.1 nftables not in use"
+ fi
+ 
+ # =====================[ SECTION 4.3.2: Allow Established Connections in nftables ]=====================
+ start_section "4.3.2"
+ 
+ # Check if nftables is enabled
+ if systemctl is-enabled nftables.service &>/dev/null; then
+   run_command "echo 'nftables is enabled — configuring rules for established connections'" "4.3.2 nftables in use"
+ 
+   # Add rules to allow established connections for TCP, UDP, and ICMP
+   run_command "nft add rule inet filter input ip protocol tcp ct state established accept" "4.3.2 Allow established TCP connections"
+   run_command "nft add rule inet filter input ip protocol udp ct state established accept" "4.3.2 Allow established UDP connections"
+   run_command "nft add rule inet filter input ip protocol icmp ct state established accept" "4.3.2 Allow established ICMP connections"
+ else
+   run_command "echo 'nftables is not enabled — skipping established connection rules'" "4.3.2 nftables not in use"
+ fi
+ 
+ # =====================[ SECTION 4.3.3: Set Default DROP Policy in nftables ]=====================
+ start_section "4.3.3"
+ 
+ # Check if nftables is enabled
+ if systemctl is-enabled nftables.service &>/dev/null; then
+   run_command "echo 'nftables is enabled — setting default DROP policy on base chains'" "4.3.3 nftables in use"
+ 
+   # Set default DROP policy for input, forward, and output chains
+   for chain in input forward output; do
+     run_command "nft chain inet filter $chain { policy drop \; }" "4.3.3 Set default DROP policy on $chain chain"
+   done
+ else
+   run_command "echo 'nftables is not enabled — skipping DROP policy configuration'" "4.3.3 nftables not in use"
+ fi
+ # =====================[ SECTION 4.3.4: Configure nftables Loopback Traffic ]=====================
+ start_section "4.3.4"
+ 
+ # Determine active firewall utility
+ if systemctl is-enabled firewalld.service &>/dev/null; then
+   run_command "echo 'FirewallD is enabled — loopback rule recommendation is not applicable'" "4.3.4 Firewalld in use"
+ elif systemctl is-enabled nftables.service &>/dev/null; then
+   run_command "echo 'nftables is enabled — configuring loopback traffic rules'" "4.3.4 nftables in use"
+ 
+   # Accept traffic from loopback interface
+   if ! nft list ruleset | awk '/hook\s+input\s+/,/\}/' | grep -Pq '\H+\h+"lo"\h+accept'; then
+     run_command "nft add rule inet filter input iif lo accept" "4.3.4 Accept traffic from loopback interface"
+   else
+     run_command "echo 'Loopback accept rule already present'" "4.3.4 Confirm loopback accept rule"
+   fi
+ 
+   # Drop spoofed IPv4 loopback traffic
+   l_ipsaddr="$(nft list ruleset | awk '/hook\s+input\s+/,/\}/' | grep -P 'ip\h+saddr')"
+   if ! grep -Pq 'ip\h+saddr\h+127\.0\.0\.0\/8\h+(counter\h+packets\h+\d+\h+bytes\h+\d+\h+)?drop' <<< "$l_ipsaddr" &&
+      ! grep -Pq 'ip\h+daddr\h+\!\=\h+127\.0\.0\.1\h+ip\h+saddr\h+127\.0\.0\.1\h+drop' <<< "$l_ipsaddr"; then
+     run_command "nft add rule inet filter input ip saddr 127.0.0.0/8 counter drop" "4.3.4 Drop spoofed IPv4 loopback traffic"
+   else
+     run_command "echo 'IPv4 loopback drop rule already present'" "4.3.4 Confirm IPv4 spoofed traffic rule"
+   fi
+ 
+   # Drop spoofed IPv6 loopback traffic if IPv6 is enabled
+   if grep -Pq '^\h*0\h*$' /sys/module/ipv6/parameters/disable; then
+     l_ip6saddr="$(nft list ruleset | awk '/hook\s+input\s+/,/\}/' | grep 'ip6 saddr')"
+     if ! grep -Pq 'ip6\h+saddr\h+::1\h+(counter\h+packets\h+\d+\h+bytes\h+\d+\h+)?drop' <<< "$l_ip6saddr" &&
+        ! grep -Pq 'ip6\h+daddr\h+\!=\h+::1\h+ip6\h+saddr\h+::1\h+drop' <<< "$l_ip6saddr"; then
+       run_command "nft add rule inet filter input ip6 saddr ::1 counter drop" "4.3.4 Drop spoofed IPv6 loopback traffic"
+     else
+       run_command "echo 'IPv6 loopback drop rule already present'" "4.3.4 Confirm IPv6 spoofed traffic rule"
+     fi
+   else
+     run_command "echo 'IPv6 is disabled — skipping IPv6 loopback rules'" "4.3.4 IPv6 not applicable"
+   fi
+ else
+   run_command "echo 'No active firewall detected — manual remediation may be required'" "4.3.4 No firewall utility active"
+ fi
+fi
+
 
 
 
