@@ -1621,6 +1621,548 @@ if [[ -z "$TARGET_SECTION" || "$TARGET_SECTION" == "4.3" ]]; then
  fi
 fi
 
+########################################################################################
+if [[ -z "$TARGET_SECTION" || "$TARGET_SECTION" == "5.1" ]]; then
+ # =====================[ SECTION 5.1.1: Secure SSH Configuration File Permissions ]=====================
+ start_section "5.1.1"
+ 
+ # Secure /etc/ssh/sshd_config
+ run_command "chmod u-x,og-rwx /etc/ssh/sshd_config" "5.1.1 Remove execute and world access from sshd_config"
+ run_command "chown root:root /etc/ssh/sshd_config" "5.1.1 Set ownership of sshd_config to root"
+ 
+ # Secure *.conf files in /etc/ssh/sshd_config.d
+ while IFS= read -r -d $'\0' l_file; do
+   if [ -e "$l_file" ]; then
+     run_command "chmod u-x,og-rwx \"$l_file\"" "5.1.1 Remove execute and world access from $l_file"
+     run_command "chown root:root \"$l_file\"" "5.1.1 Set ownership of $l_file to root"
+   fi
+ done < <(find /etc/ssh/sshd_config.d -type f -name '*.conf' -print0 2>/dev/null)
+ 
+ # Check for additional Include paths in sshd_config
+ include_paths=$(grep -E '^\s*Include\s+' /etc/ssh/sshd_config | awk '{print $2}')
+ for path in $include_paths; do
+   # Expand globs and secure matching files
+   for file in $(find $(dirname "$path") -type f -name "$(basename "$path")" 2>/dev/null); do
+     run_command "chmod u-x,og-rwx \"$file\"" "5.1.1 Remove execute and world access from included file: $file"
+     run_command "chown root:root \"$file\"" "5.1.1 Set ownership of included file to root: $file"
+   done
+ done
+ # =====================[ SECTION 5.1.2: Secure SSH Private Host Key Permissions ]=====================
+ start_section "5.1.2"
+ 
+ # Identify appropriate SSH group
+ ssh_group_name="$(awk -F: '($1 ~ /^(ssh_keys|_?ssh)$/) {print $1}' /etc/group)"
+ 
+ # Function to fix file access
+ fix_file_access() {
+   while IFS=: read -r file_mode file_owner file_group; do
+     run_command "echo 'Checking $file — mode: $file_mode, owner: $file_owner, group: $file_group'" "5.1.2 Inspect $file"
+ 
+     # Determine permission mask
+     if [ "$file_group" = "$ssh_group_name" ]; then
+       perm_mask="0137"
+     else
+       perm_mask="0177"
+     fi
+     max_perm="$(printf '%o' $((0777 & ~$perm_mask)))"
+ 
+     # Fix permissions
+     if [ $((file_mode & perm_mask)) -gt 0 ]; then
+       if [ "$file_group" = "$ssh_group_name" ]; then
+         run_command "chmod u-x,g-wx,o-rwx \"$file\"" "5.1.2 Restrict permissions for $file"
+       else
+         run_command "chmod u-x,go-rwx \"$file\"" "5.1.2 Restrict permissions for $file"
+       fi
+     fi
+ 
+     # Fix ownership
+     if [ "$file_owner" != "root" ]; then
+       run_command "chown root \"$file\"" "5.1.2 Set owner to root for $file"
+     fi
+ 
+     # Fix group ownership
+     if [[ ! "$file_group" =~ ($ssh_group_name|root) ]]; then
+       new_group="${ssh_group_name:-root}"
+       run_command "chgrp \"$new_group\" \"$file\"" "5.1.2 Set group to $new_group for $file"
+     fi
+   done < <(stat -Lc '%#a:%U:%G' "$file")
+ }
+ 
+ # Scan and remediate SSH private host key files
+ while IFS= read -r -d $'\0' file; do
+   if ssh-keygen -lf "$file" &>/dev/null; then
+     if file "$file" | grep -Piq '\bopenssh\b.*\bprivate key\b'; then
+       fix_file_access
+     fi
+   fi
+ done < <(find -L /etc/ssh -xdev -type f -print0 2>/dev/null)
+ 
+ # =====================[ SECTION 5.1.3: Secure SSH Public Host Key Permissions ]=====================
+ start_section "5.1.3"
+ 
+ # Define permission mask and max allowed permission
+ perm_mask="0133"
+ max_perm="$(printf '%o' $((0777 & ~$perm_mask)))"
+ 
+ # Function to fix file access
+ fix_public_key_access() {
+   while IFS=: read -r file_mode file_owner file_group; do
+     run_command "echo 'Checking $file — mode: $file_mode, owner: $file_owner, group: $file_group'" "5.1.3 Inspect $file"
+ 
+     # Fix permissions
+     if [ $((file_mode & perm_mask)) -gt 0 ]; then
+       run_command "chmod u-x,go-wx \"$file\"" "5.1.3 Restrict permissions for $file"
+     fi
+ 
+     # Fix ownership
+     if [ "$file_owner" != "root" ]; then
+       run_command "chown root \"$file\"" "5.1.3 Set owner to root for $file"
+     fi
+ 
+     # Fix group ownership
+     if [ "$file_group" != "root" ]; then
+       run_command "chgrp root \"$file\"" "5.1.3 Set group to root for $file"
+     fi
+   done < <(stat -Lc '%#a:%U:%G' "$file")
+ }
+ 
+ # Scan and remediate SSH public host key files
+ while IFS= read -r -d $'\0' file; do
+   if ssh-keygen -lf "$file" &>/dev/null; then
+     if file "$file" | grep -Piq '\bopenssh\b.*\bpublic key\b'; then
+       fix_public_key_access
+     fi
+   fi
+ done < <(find -L /etc/ssh -xdev -type f -print0 2>/dev/null)
+ 
+ # =====================[ SECTION 5.1.4: Configure SSHD Ciphers via Crypto Policy ]=====================
+ start_section "5.1.4"
+ 
+ # Create subpolicy to disable weak SSH ciphers
+ run_command "printf '%s\\n' '# This is a subpolicy to disable weak ciphers' '# for the SSH protocol (libssh and OpenSSH)' 'cipher@SSH = -3DES-CBC -AES-128-CBC -AES-192-CBC -AES-256-CBC -CHACHA20-POLY1305' > /etc/crypto-policies/policies/modules/NO-SSHWEAKCIPHERS.pmod" "5.1.4 Create NO-SSHWEAKCIPHERS subpolicy"
+ 
+ # Apply updated crypto policy
+ run_command "update-crypto-policies --set DEFAULT:NO-SHA1:NO-WEAKMAC:NO-SSHCBC:NO-SSHCHACHA20:NO-SSHWEAKCIPHERS" "5.1.4 Apply updated system-wide crypto policy"
+ 
+ # Ensure sshd_config includes crypto policy before any Cipher directives
+ if ! grep -q '^Include /etc/ssh/sshd_config.d/\*\.conf' /etc/ssh/sshd_config; then
+   run_command "sed -i '1iInclude /etc/ssh/sshd_config.d/*.conf' /etc/ssh/sshd_config" "5.1.4 Insert Include directive in sshd_config"
+ fi
+ 
+ if [ ! -f /etc/ssh/sshd_config.d/50-redhat.conf ]; then
+   run_command "touch /etc/ssh/sshd_config.d/50-redhat.conf" "5.1.4 Create 50-redhat.conf"
+ fi
+ 
+ if ! grep -q '^Include /etc/crypto-policies/back-ends/opensshserver.config' /etc/ssh/sshd_config.d/50-redhat.conf; then
+   run_command "echo 'Include /etc/crypto-policies/back-ends/opensshserver.config' >> /etc/ssh/sshd_config.d/50-redhat.conf" "5.1.4 Add crypto policy include to 50-redhat.conf"
+ fi
+ 
+ # Reload SSHD to apply changes
+ run_command "systemctl reload-or-restart sshd" "5.1.4 Reload SSHD to apply cipher policy"
+ 
+ # =====================[ SECTION 5.1.5: Configure SSHD KexAlgorithms via Crypto Policy ]=====================
+ start_section "5.1.5"
+ 
+ # Create subpolicy to disable SHA1 hash and signature support
+ run_command "printf '%s\\n' '# This is a subpolicy dropping the SHA1 hash and signature support' 'hash = -SHA1' 'sign = -*-SHA1' 'sha1_in_certs = 0' > /etc/crypto-policies/policies/modules/NO-SHA1.pmod" "5.1.5 Create NO-SHA1 subpolicy"
+ 
+ # Apply updated crypto policy
+ run_command "update-crypto-policies --set DEFAULT:NO-SHA1:NO-WEAKMAC:NO-SSHCBC:NO-SSHCHACHA20:NO-SSHETM:NO-SSHWEAKCIPHERS" "5.1.5 Apply updated system-wide crypto policy"
+ 
+ # Ensure sshd_config includes crypto policy before any KexAlgorithms directives
+ if ! grep -q '^Include /etc/ssh/sshd_config.d/\*\.conf' /etc/ssh/sshd_config; then
+   run_command "sed -i '1iInclude /etc/ssh/sshd_config.d/*.conf' /etc/ssh/sshd_config" "5.1.5 Insert Include directive in sshd_config"
+ fi
+ 
+ if [ ! -f /etc/ssh/sshd_config.d/50-redhat.conf ]; then
+   run_command "touch /etc/ssh/sshd_config.d/50-redhat.conf" "5.1.5 Create 50-redhat.conf"
+ fi
+ 
+ if ! grep -q '^Include /etc/crypto-policies/back-ends/opensshserver.config' /etc/ssh/sshd_config.d/50-redhat.conf; then
+   run_command "echo 'Include /etc/crypto-policies/back-ends/opensshserver.config' >> /etc/ssh/sshd_config.d/50-redhat.conf" "5.1.5 Add crypto policy include to 50-redhat.conf"
+ fi
+ 
+ # Reload SSHD to apply changes
+ run_command "systemctl reload-or-restart sshd" "5.1.5 Reload SSHD to apply KexAlgorithms policy"
+ 
+ # =====================[ SECTION 5.1.6: Configure SSHD MACs via Crypto Policy ]=====================
+ start_section "5.1.6"
+ 
+ # Create subpolicy to disable weak MACs
+ run_command "printf '%s\\n' '# This is a subpolicy to disable weak MACs' '# for the SSH protocol (libssh and OpenSSH)' 'mac@SSH = -HMAC-MD5* -UMAC-64* -UMAC-128*' > /etc/crypto-policies/policies/modules/NO-SSHWEAKMACS.pmod" "5.1.6 Create NO-SSHWEAKMACS subpolicy"
+ 
+ # Apply updated crypto policy including EtM exclusions if CVE-2023-48795 is not addressed
+ run_command \"update-crypto-policies --set DEFAULT:NO-SHA1:NO-WEAKMAC:NO-SSHCBC:NO-SSHCHACHA20:NO-SSHETM:NO-SSHWEAKCIPHERS:NO-SSHWEAKMACS\" "5.1.6 Apply updated system-wide crypto policy"
+ 
+ # Ensure sshd_config includes crypto policy before any MACs directives
+ if ! grep -q '^Include /etc/ssh/sshd_config.d/\*\.conf' /etc/ssh/sshd_config; then
+   run_command "sed -i '1iInclude /etc/ssh/sshd_config.d/*.conf' /etc/ssh/sshd_config" "5.1.6 Insert Include directive in sshd_config"
+ fi
+ 
+ if [ ! -f /etc/ssh/sshd_config.d/50-redhat.conf ]; then
+   run_command "touch /etc/ssh/sshd_config.d/50-redhat.conf" "5.1.6 Create 50-redhat.conf"
+ fi
+ 
+ if ! grep -q '^Include /etc/crypto-policies/back-ends/opensshserver.config' /etc/ssh/sshd_config.d/50-redhat.conf; then
+   run_command "echo 'Include /etc/crypto-policies/back-ends/opensshserver.config' >> /etc/ssh/sshd_config.d/50-redhat.conf" "5.1.6 Add crypto policy include to 50-redhat.conf"
+ fi
+ 
+ # Reload SSHD to apply changes
+ run_command "systemctl reload-or-restart sshd" "5.1.6 Reload SSHD to apply MACs policy"
+ 
+ # =====================[ SECTION 5.1.7: Configure SSHD Access Control ]=====================
+ start_section "5.1.7"
+ 
+ # Define allowed users or groups (customize as needed)
+ allowed_users="adminuser admin"
+ allowed_groups="sshusers"
+ 
+ # Ensure AllowUsers or AllowGroups is set before any Include or Match directives
+ if grep -qE '^\s*Include|^\s*Match' /etc/ssh/sshd_config; then
+   run_command "sed -i '/^Include\|^Match/i AllowUsers $allowed_users' /etc/ssh/sshd_config" "5.1.7 Insert AllowUsers before Include/Match"
+   # Uncomment below if using AllowGroups instead
+   # run_command "sed -i '/^Include\|^Match/i AllowGroups $allowed_groups' /etc/ssh/sshd_config" "5.1.7 Insert AllowGroups before Include/Match"
+ else
+   run_command "echo 'AllowUsers $allowed_users' >> /etc/ssh/sshd_config" "5.1.7 Append AllowUsers to sshd_config"
+   # Uncomment below if using AllowGroups instead
+   # run_command "echo 'AllowGroups $allowed_groups' >> /etc/ssh/sshd_config" "5.1.7 Append AllowGroups to sshd_config"
+ fi
+ 
+ # Reload SSHD to apply changes
+ run_command "systemctl reload-or-restart sshd" "5.1.7 Reload SSHD to apply access control"
+ 
+ # =====================[ SECTION 5.1.8: Configure SSHD Banner ]=====================
+ start_section "5.1.8"
+ 
+ # Ensure Banner directive is set before any Include or Match statements
+ if grep -qE '^\s*Include|^\s*Match' /etc/ssh/sshd_config; then
+   run_command "sed -i '/^Include\|^Match/i Banner /etc/issue.net' /etc/ssh/sshd_config" "5.1.8 Insert Banner directive before Include/Match"
+ else
+   run_command "echo 'Banner /etc/issue.net' >> /etc/ssh/sshd_config" "5.1.8 Append Banner directive to sshd_config"
+ fi
+ 
+ # Set banner content according to site policy
+ run_command "printf '%s\\n' 'Authorized users only. All activity may be monitored and reported.' > /etc/issue.net" "5.1.8 Set banner content in /etc/issue.net"
+ 
+ # Reload SSHD to apply changes
+ run_command "systemctl reload-or-restart sshd" "5.1.8 Reload SSHD to apply banner configuration"
+ 
+ # =====================[ SECTION 5.1.9: Configure SSHD ClientAliveInterval and ClientAliveCountMax ]=====================
+ start_section "5.1.9"
+ 
+ # Define desired values (adjust according to site policy)
+ client_alive_interval="15"
+ client_alive_count_max="3"
+ 
+ # Insert settings before any Include or Match directives
+ if grep -qE '^\s*Include|^\s*Match' /etc/ssh/sshd_config; then
+   run_command "sed -i '/^Include\\|^Match/i ClientAliveInterval $client_alive_interval\\nClientAliveCountMax $client_alive_count_max' /etc/ssh/sshd_config" "5.1.9 Insert ClientAlive settings before Include/Match"
+ else
+   run_command "echo -e 'ClientAliveInterval $client_alive_interval\\nClientAliveCountMax $client_alive_count_max' >> /etc/ssh/sshd_config" "5.1.9 Append ClientAlive settings to sshd_config"
+ fi
+ 
+ # Reload SSHD to apply changes
+ run_command "systemctl reload-or-restart sshd" "5.1.9 Reload SSHD to apply ClientAlive settings"
+ 
+ # =====================[ SECTION 5.1.10: Disable SSH Forwarding ]=====================
+ start_section "5.1.10"
+ 
+ # Ensure DisableForwarding is set before any Include directives
+ if grep -qE '^\s*Include' /etc/ssh/sshd_config; then
+   run_command "sed -i '/^Include/i DisableForwarding yes' /etc/ssh/sshd_config" "5.1.10 Insert DisableForwarding before Include"
+ else
+   run_command "echo 'DisableForwarding yes' >> /etc/ssh/sshd_config" "5.1.10 Append DisableForwarding to sshd_config"
+ fi
+ 
+ # Reload SSHD to apply changes
+ run_command "systemctl reload-or-restart sshd" "5.1.10 Reload SSHD to apply DisableForwarding setting"
+ 
+ # =====================[ SECTION 5.1.11: Disable GSSAPIAuthentication in SSHD ]=====================
+ start_section "5.1.11"
+ 
+ # Ensure GSSAPIAuthentication is set to no before any Include or Match directives
+ if grep -qE '^\s*Include|^\s*Match' /etc/ssh/sshd_config; then
+   run_command "sed -i '/^Include\\|^Match/i GSSAPIAuthentication no' /etc/ssh/sshd_config" "5.1.11 Insert GSSAPIAuthentication before Include/Match"
+ else
+   run_command "echo 'GSSAPIAuthentication no' >> /etc/ssh/sshd_config" "5.1.11 Append GSSAPIAuthentication to sshd_config"
+ fi
+ 
+ # Reload SSHD to apply changes
+ run_command "systemctl reload-or-restart sshd" "5.1.11 Reload SSHD to apply GSSAPIAuthentication setting"
+ 
+ # =====================[ SECTION 5.1.12: Disable SSH HostbasedAuthentication ]=====================
+ start_section "5.1.12"
+ 
+ # Ensure HostbasedAuthentication is set to no before any Include or Match directives
+ if grep -qE '^\s*Include|^\s*Match' /etc/ssh/sshd_config; then
+   run_command "sed -i '/^Include\\|^Match/i HostbasedAuthentication no' /etc/ssh/sshd_config" "5.1.12 Insert HostbasedAuthentication before Include/Match"
+ else
+   run_command "echo 'HostbasedAuthentication no' >> /etc/ssh/sshd_config" "5.1.12 Append HostbasedAuthentication to sshd_config"
+ fi
+ 
+ # Reload SSHD to apply changes
+ run_command "systemctl reload-or-restart sshd" "5.1.12 Reload SSHD to apply HostbasedAuthentication setting"
+ 
+ # =====================[ SECTION 5.1.13: Enable IgnoreRhosts in SSHD ]=====================
+ start_section "5.1.13"
+ 
+ # Ensure IgnoreRhosts is set to yes before any Include or Match directives
+ if grep -qE '^\s*Include|^\s*Match' /etc/ssh/sshd_config; then
+   run_command "sed -i '/^Include\\|^Match/i IgnoreRhosts yes' /etc/ssh/sshd_config" "5.1.13 Insert IgnoreRhosts before Include/Match"
+ else
+   run_command "echo 'IgnoreRhosts yes' >> /etc/ssh/sshd_config" "5.1.13 Append IgnoreRhosts to sshd_config"
+ fi
+ 
+ # Reload SSHD to apply changes
+ run_command "systemctl reload-or-restart sshd" "5.1.13 Reload SSHD to apply IgnoreRhosts setting"
+ 
+ # =====================[ SECTION 5.1.14: Configure SSHD LoginGraceTime ]=====================
+ start_section "5.1.14"
+ 
+ # Define desired value (adjust according to site policy)
+ login_grace_time="60"
+ 
+ # Ensure LoginGraceTime is set before any Include directives
+ if grep -qE '^\s*Include' /etc/ssh/sshd_config; then
+   run_command "sed -i '/^Include/i LoginGraceTime $login_grace_time' /etc/ssh/sshd_config" "5.1.14 Insert LoginGraceTime before Include"
+ else
+   run_command "echo 'LoginGraceTime $login_grace_time' >> /etc/ssh/sshd_config" "5.1.14 Append LoginGraceTime to sshd_config"
+ fi
+ 
+ # Reload SSHD to apply changes
+ run_command "systemctl reload-or-restart sshd" "5.1.14 Reload SSHD to apply LoginGraceTime setting"
+ 
+ # =====================[ SECTION 5.1.15: Configure SSHD LogLevel ]=====================
+ start_section "5.1.15"
+ 
+ # Define desired log level (adjust to INFO if preferred)
+ log_level="VERBOSE"
+ 
+ # Ensure LogLevel is set before any Include or Match directives
+ if grep -qE '^\s*Include|^\s*Match' /etc/ssh/sshd_config; then
+   run_command "sed -i '/^Include\\|^Match/i LogLevel $log_level' /etc/ssh/sshd_config" "5.1.15 Insert LogLevel before Include/Match"
+ else
+   run_command "echo 'LogLevel $log_level' >> /etc/ssh/sshd_config" "5.1.15 Append LogLevel to sshd_config"
+ fi
+ 
+ # Reload SSHD to apply changes
+ run_command "systemctl reload-or-restart sshd" "5.1.15 Reload SSHD to apply LogLevel setting"
+ 
+ # =====================[ SECTION 5.1.16: Configure SSHD MaxAuthTries ]=====================
+ start_section "5.1.16"
+ 
+ # Define desired value (adjust according to site policy)
+ max_auth_tries="4"
+ 
+ # Ensure MaxAuthTries is set before any Include or Match directives
+ if grep -qE '^\s*Include|^\s*Match' /etc/ssh/sshd_config; then
+   run_command "sed -i '/^Include\\|^Match/i MaxAuthTries $max_auth_tries' /etc/ssh/sshd_config" "5.1.16 Insert MaxAuthTries before Include/Match"
+ else
+   run_command "echo 'MaxAuthTries $max_auth_tries' >> /etc/ssh/sshd_config" "5.1.16 Append MaxAuthTries to sshd_config"
+ fi
+ 
+ # Reload SSHD to apply changes
+ run_command "systemctl reload-or-restart sshd" "5.1.16 Reload SSHD to apply MaxAuthTries setting"
+ 
+ # =====================[ SECTION 5.1.17: Configure SSHD MaxStartups ]=====================
+ start_section "5.1.17"
+ 
+ # Define desired value (adjust according to site policy)
+ max_startups="10:30:60"
+ 
+ # Ensure MaxStartups is set before any Include directives
+ if grep -qE '^\s*Include' /etc/ssh/sshd_config; then
+   run_command "sed -i '/^Include/i MaxStartups $max_startups' /etc/ssh/sshd_config" "5.1.17 Insert MaxStartups before Include"
+ else
+   run_command "echo 'MaxStartups $max_startups' >> /etc/ssh/sshd_config" "5.1.17 Append MaxStartups to sshd_config"
+ fi
+ 
+ # Reload SSHD to apply changes
+ run_command "systemctl reload-or-restart sshd" "5.1.17 Reload SSHD to apply MaxStartups setting"
+ 
+ # =====================[ SECTION 5.1.18: Configure SSHD MaxSessions ]=====================
+ start_section "5.1.18"
+ 
+ # Define desired value (adjust according to site policy)
+ max_sessions="10"
+ 
+ # Ensure MaxSessions is set before any Include or Match directives
+ if grep -qE '^\s*Include|^\s*Match' /etc/ssh/sshd_config; then
+   run_command "sed -i '/^Include\\|^Match/i MaxSessions $max_sessions' /etc/ssh/sshd_config" "5.1.18 Insert MaxSessions before Include/Match"
+ else
+   run_command "echo 'MaxSessions $max_sessions' >> /etc/ssh/sshd_config" "5.1.18 Append MaxSessions to sshd_config"
+ fi
+ 
+ # Reload SSHD to apply changes
+ run_command "systemctl reload-or-restart sshd" "5.1.18 Reload SSHD to apply MaxSessions setting"
+ 
+ # =====================[ SECTION 5.1.19: Disable PermitEmptyPasswords in SSHD ]=====================
+ start_section "5.1.19"
+ 
+ # Ensure PermitEmptyPasswords is set to no before any Include or Match directives
+ if grep -qE '^\s*Include|^\s*Match' /etc/ssh/sshd_config; then
+   run_command "sed -i '/^Include\\|^Match/i PermitEmptyPasswords no' /etc/ssh/sshd_config" "5.1.19 Insert PermitEmptyPasswords before Include/Match"
+ else
+   run_command "echo 'PermitEmptyPasswords no' >> /etc/ssh/sshd_config" "5.1.19 Append PermitEmptyPasswords to sshd_config"
+ fi
+ 
+ # Reload SSHD to apply changes
+ run_command "systemctl reload-or-restart sshd" "5.1.19 Reload SSHD to apply PermitEmptyPasswords setting"
+ 
+ # =====================[ SECTION 5.1.20: Disable SSH Root Login ]=====================
+ start_section "5.1.20"
+ 
+ # Ensure PermitRootLogin is set to no before any Include or Match directives
+ if grep -qE '^\s*Include|^\s*Match' /etc/ssh/sshd_config; then
+   run_command "sed -i '/^Include\\|^Match/i PermitRootLogin no' /etc/ssh/sshd_config" "5.1.20 Insert PermitRootLogin before Include/Match"
+ else
+   run_command "echo 'PermitRootLogin no' >> /etc/ssh/sshd_config" "5.1.20 Append PermitRootLogin to sshd_config"
+ fi
+ 
+ # Reload SSHD to apply changes
+ run_command "systemctl reload-or-restart sshd" "5.1.20 Reload SSHD to apply PermitRootLogin setting"
+ 
+ # =====================[ SECTION 5.1.21: Disable PermitUserEnvironment in SSHD ]=====================
+ start_section "5.1.21"
+ 
+ # Ensure PermitUserEnvironment is set to no before any Include directives
+ if grep -qE '^\s*Include' /etc/ssh/sshd_config; then
+   run_command "sed -i '/^Include/i PermitUserEnvironment no' /etc/ssh/sshd_config" "5.1.21 Insert PermitUserEnvironment before Include"
+ else
+   run_command "echo 'PermitUserEnvironment no' >> /etc/ssh/sshd_config" "5.1.21 Append PermitUserEnvironment to sshd_config"
+ fi
+ 
+ # Reload SSHD to apply changes
+ run_command "systemctl reload-or-restart sshd" "5.1.21 Reload SSHD to apply PermitUserEnvironment setting"
+ 
+ # =====================[ SECTION 5.1.22: Enable UsePAM in SSHD ]=====================
+ start_section "5.1.22"
+ 
+ # Ensure UsePAM is set to yes before any Include directives
+ if grep -qE '^\s*Include' /etc/ssh/sshd_config; then
+   run_command "sed -i '/^Include/i UsePAM yes' /etc/ssh/sshd_config" "5.1.22 Insert UsePAM before Include"
+ else
+   run_command "echo 'UsePAM yes' >> /etc/ssh/sshd_config" "5.1.22 Append UsePAM to sshd_config"
+ fi
+ 
+ # Reload SSHD to apply changes
+ run_command "systemctl reload-or-restart sshd" "5.1.22 Reload SSHD to apply UsePAM setting"
+fi
+
+
+########################################################################################
+if [[ -z "$TARGET_SECTION" || "$TARGET_SECTION" == "5.2" ]]; then
+ # =====================[ SECTION 5.2.1: Ensure sudo is installed ]=====================
+ start_section "5.2.1"
+ 
+ # Install sudo package
+ run_command "dnf install -y sudo" "5.2.1 Install sudo package"
+ 
+ # =====================[ SECTION 5.2.2: Enforce use_pty for sudo commands ]=====================
+ start_section "5.2.2"
+ 
+ # Ensure Defaults use_pty is set in /etc/sudoers
+ run_command "visudo -cf /etc/sudoers && grep -q '^Defaults.*use_pty' /etc/sudoers || echo 'Defaults use_pty' | EDITOR='tee -a' visudo" "5.2.2 Ensure use_pty is set in /etc/sudoers"
+ 
+ # Remove any occurrence of !use_pty from /etc/sudoers
+ run_command "sed -i '/Defaults.*!use_pty/d' /etc/sudoers" "5.2.2 Remove !use_pty from /etc/sudoers"
+ 
+ # Iterate through valid sudoers.d files and apply same logic
+ for file in /etc/sudoers.d/*; do
+   if [[ -f \"$file\" && \"$file\" != *~ && \"$file\" != *.* ]]; then
+     run_command "visudo -cf \"$file\" && grep -q '^Defaults.*use_pty' \"$file\" || echo 'Defaults use_pty' | EDITOR='tee -a' visudo -f \"$file\"" "5.2.2 Ensure use_pty is set in $file"
+     run_command "sed -i '/Defaults.*!use_pty/d' \"$file\"" "5.2.2 Remove !use_pty from $file"
+   fi
+ done
+ 
+ # =====================[ SECTION 5.2.3: Ensure sudo log file exists ]=====================
+ start_section "5.2.3"
+ 
+ # Define desired sudo log file path
+ sudo_log_file="/var/log/sudo.log"
+ 
+ # Ensure Defaults logfile is set in /etc/sudoers
+ run_command "visudo -cf /etc/sudoers && grep -q '^Defaults.*logfile=\"' /etc/sudoers || echo 'Defaults logfile=\"$sudo_log_file\"' | EDITOR='tee -a' visudo" "5.2.3 Ensure logfile is set in /etc/sudoers"
+ 
+ # Iterate through valid sudoers.d files and apply same logic
+ for file in /etc/sudoers.d/*; do
+   if [[ -f \"$file\" && \"$file\" != *~ && \"$file\" != *.* ]]; then
+     run_command "visudo -cf \"$file\" && grep -q '^Defaults.*logfile=\"' \"$file\" || echo 'Defaults logfile=\"$sudo_log_file\"' | EDITOR='tee -a' visudo -f \"$file\"" "5.2.3 Ensure logfile is set in $file"
+   fi
+ done
+ 
+ # Ensure log file exists
+ run_command "touch \"$sudo_log_file\" && chmod 600 \"$sudo_log_file\"" "5.2.3 Create and secure sudo log file"
+ 
+ # =====================[ SECTION 5.2.4: Enforce password prompt for sudo escalation ]=====================
+ start_section "5.2.4"
+ 
+ # Remove NOPASSWD entries from /etc/sudoers
+ run_command "sed -i '/NOPASSWD/d' /etc/sudoers" "5.2.4 Remove NOPASSWD from /etc/sudoers"
+ 
+ # Iterate through valid sudoers.d files and remove NOPASSWD entries
+ for file in /etc/sudoers.d/*; do
+   if [[ -f \"$file\" && \"$file\" != *~ && \"$file\" != *.* ]]; then
+     run_command "sed -i '/NOPASSWD/d' \"$file\"" "5.2.4 Remove NOPASSWD from $file"
+   fi
+ done
+ 
+ # =====================[ SECTION 5.2.5: Enforce re-authentication for sudo escalation ]=====================
+ start_section "5.2.5"
+ 
+ # Remove !authenticate entries from /etc/sudoers
+ run_command "sed -i '/!authenticate/d' /etc/sudoers" "5.2.5 Remove !authenticate from /etc/sudoers"
+ 
+ # Iterate through valid sudoers.d files and remove !authenticate entries
+ for file in /etc/sudoers.d/*; do
+   if [[ -f \"$file\" && \"$file\" != *~ && \"$file\" != *.* ]]; then
+     run_command "sed -i '/!authenticate/d' \"$file\"" "5.2.5 Remove !authenticate from $file"
+   fi
+ done
+ 
+ # =====================[ SECTION 5.2.6: Configure sudo authentication timeout ]=====================
+ start_section "5.2.6"
+ 
+ # Define desired timeout value (in minutes)
+ sudo_timeout="15"
+ 
+ # Update or insert timestamp_timeout in /etc/sudoers
+ if grep -q 'timestamp_timeout=' /etc/sudoers; then
+   run_command "sed -i 's/timestamp_timeout=[0-9]\\+/timestamp_timeout=$sudo_timeout/' /etc/sudoers" "5.2.6 Update timestamp_timeout in /etc/sudoers"
+ else
+   run_command "echo 'Defaults timestamp_timeout=$sudo_timeout' | EDITOR='tee -a' visudo" "5.2.6 Insert timestamp_timeout in /etc/sudoers"
+ fi
+ 
+ # Iterate through valid sudoers.d files and apply same logic
+ for file in /etc/sudoers.d/*; do
+   if [[ -f \"$file\" && \"$file\" != *~ && \"$file\" != *.* ]]; then
+     if grep -q 'timestamp_timeout=' \"$file\"; then
+       run_command "sed -i 's/timestamp_timeout=[0-9]\\+/timestamp_timeout=$sudo_timeout/' \"$file\"" "5.2.6 Update timestamp_timeout in $file"
+     else
+       run_command "echo 'Defaults timestamp_timeout=$sudo_timeout' | EDITOR='tee -a' visudo -f \"$file\"" "5.2.6 Insert timestamp_timeout in $file"
+     fi
+   fi
+ done
+ 
+ # =====================[ SECTION 5.2.7: Restrict access to su command ]=====================
+ start_section "5.2.7"
+ 
+ # Define group name according to site policy
+ su_group="sugroup"
+ 
+ # Create the group if it doesn't exist
+ if ! getent group "$su_group" > /dev/null; then
+   run_command "groupadd $su_group" "5.2.7 Create group $su_group"
+ fi
+ 
+ # Ensure PAM configuration restricts su access to the group
+ pam_su_file="/etc/pam.d/su"
+ pam_entry="auth required pam_wheel.so use_uid group=$su_group"
+ if ! grep -q "$pam_entry" "$pam_su_file"; then
+   run_command "echo '$pam_entry' >> $pam_su_file" "5.2.7 Restrict su access to $su_group in PAM config"
+ fi
+fi
+
 
 
 
